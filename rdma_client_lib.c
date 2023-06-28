@@ -105,19 +105,11 @@ client_ctx_t *setup_client(struct sockaddr_in *src_addr,
         "Unable to create RDMA Connection ID. Reason: %s\n", strerror(errno));
 
     // bind a connection to an IP address
-    rc = rdma_bind_addr(ctx->cm_id, (struct sockaddr *)(src_addr));
-    API_STATUS(
-        rc, { goto free_cm_id; },
-        "Unable to bind RDMA device IP: %s. Reason: %s\n",
-        inet_ntoa(src_addr->sin_addr), strerror(errno));
-
-    // listen for incoming requests on a connection
-    rc = rdma_listen(ctx->cm_id, MAX_PENDING_CONNECTIONS);
-    API_STATUS(
-        rc, { goto free_cm_id; },
-        "Unable to listen for incoming requests on RDMA device IP: %s. Reason: "
-        "%s\n",
-        inet_ntoa(src_addr->sin_addr), strerror(errno));
+    //
+    // resolve an IP address to RDMA address
+    //
+    // resolve an RDMA route
+    //
 
     // init RDMA device resources - CQs/PDs/etc
     ctx->verbs = ctx->listen_id->verbs;
@@ -137,6 +129,7 @@ client_ctx_t *setup_client(struct sockaddr_in *src_addr,
         ctx->rcq, { goto free_cq; },
         "Unable to create RDMA Recv CQE of size 128 entries. Reason: %s\n",
         strerror(errno));
+
     // initialize event monitor
     ctx->evt_fn = &client_event_monitor;
     pthread_attr_init(&tattr);
@@ -147,24 +140,9 @@ client_ctx_t *setup_client(struct sockaddr_in *src_addr,
     API_STATUS(
         rc, { goto free_cq; }, "Unable to create RDMA event channel monitor\n");
 
-    // Accept incoming valid client connections
-    pthread_mutex_lock(&ctx->evt_mtx);
-    while (!ctx->listen_id) {
-        pthread_cond_wait(&ctx->evt_cv, &ctx->evt_mtx);
-    }
+    // Connect to the target RDMA address
 
-    rc = rdma_accept(ctx->listen_id, NULL);
-    API_STATUS(
-        rc, { goto disconnect_free_cq; },
-        "Unable to accept RDMA connection rqst. Reason: %s\n", strerror(errno));
-
-    pthread_mutex_unlock(&ctx->evt_mtx);
-
-    // Assert that connection is established
-    pthread_mutex_lock(&ctx->evt_mtx);
-    while (!ctx->is_connected) {
-        pthread_cond_wait(&ctx->evt_cv, &ctx->evt_mtx);
-    }
+    // Assert that connection to target is established
 
     // Create RDMA QPs for initialized RDMA device rsc
     qp_attr.sq_sig_all = 1;
@@ -177,7 +155,6 @@ client_ctx_t *setup_client(struct sockaddr_in *src_addr,
     API_STATUS(
         rc, { goto disconnect_free_cq; }, "Unable to RDMA QPs. Reason: %s\n",
         strerror(errno));
-    pthread_mutex_unlock(&ctx->evt_mtx);
 
     pthread_attr_destroy(&tattr);
     return (ctx);
