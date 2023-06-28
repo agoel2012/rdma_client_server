@@ -65,7 +65,7 @@ static inline server_info_t *parse_saddress_info(char *args) {
     obj->ip_addr.sin_port = htons(obj->app_port);
     inet_aton(ip, &(obj->ip_addr.sin_addr));
     // Extract rank from IP octet
-    obj->rank = (uint16_t)(obj->ip_addr.sin_addr.s_addr & 0x000000ff);
+    obj->rank = ntohl(inet_addr(ip));
 
     // Test out the extracted IP and port
     printf("IP: %s, Port: %s, Rank: %u\n", ip, port, obj->rank);
@@ -81,7 +81,7 @@ static inline client_info_t *parse_caddress_info(char *ip, char *iterations) {
     obj->ip_addr.sin_family = AF_INET;
     inet_aton(ip, &(obj->ip_addr.sin_addr));
     // Extract rank from IP octet
-    obj->rank = (uint16_t)(obj->ip_addr.sin_addr.s_addr & 0x000000ff);
+    obj->rank = ntohl(inet_addr(ip));
 
     // Store the rank and iterations into obj structure
     obj->iterations = atoi(iterations);
