@@ -3,12 +3,12 @@
 #include <arpa/inet.h>
 #include <netinet/in.h>
 #include <pthread.h>
+#include <rdma/rdma_cma.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/epoll.h>
 #include <sys/socket.h>
-#include <rdma/rdma_cma.h>
 #include <sys/types.h>
 #include <time.h>
 #include <unistd.h>
@@ -39,18 +39,18 @@ static void *server_event_monitor(void *arg) {
             pthread_cond_signal(&(ctx->evt_cv));
             pthread_mutex_unlock(&(ctx->evt_mtx));
         } break;
-	case RDMA_CM_EVENT_ESTABLISHED: {
-	    pthread_mutex_lock(&(ctx->evt_mtx));
-	    ctx->is_connected = true;
+        case RDMA_CM_EVENT_ESTABLISHED: {
+            pthread_mutex_lock(&(ctx->evt_mtx));
+            ctx->is_connected = true;
             pthread_cond_signal(&(ctx->evt_cv));
-	    pthread_mutex_unlock(&(ctx->evt_mtx));
-	} break;
-	case RDMA_CM_EVENT_DISCONNECTED: {
-	    pthread_mutex_lock(&(ctx->evt_mtx));
-	    ctx->is_connected = false;
+            pthread_mutex_unlock(&(ctx->evt_mtx));
+        } break;
+        case RDMA_CM_EVENT_DISCONNECTED: {
+            pthread_mutex_lock(&(ctx->evt_mtx));
+            ctx->is_connected = false;
             pthread_cond_signal(&(ctx->evt_cv));
-	    pthread_mutex_unlock(&(ctx->evt_mtx));
-	} break;
+            pthread_mutex_unlock(&(ctx->evt_mtx));
+        } break;
         default:
             break;
         }
@@ -72,7 +72,8 @@ server_ctx_t *setup_server(struct sockaddr_in *addr, uint16_t port_id) {
 
     // Check if any RDMA devices exist
     rdma_verbs = rdma_get_devices(&ndevices);
-    API_NULL(rdma_verbs, { return (NULL); }, "No RDMA devices found\n");
+    API_NULL(
+        rdma_verbs, { return (NULL); }, "No RDMA devices found\n");
     printf("Got %d RDMA devices\n", ndevices);
     rdma_free_devices(rdma_verbs);
 
@@ -96,7 +97,7 @@ server_ctx_t *setup_server(struct sockaddr_in *addr, uint16_t port_id) {
         ctx->channel, { goto free_ctx_fields; },
         "Unable to create RDMA event channel. Reason: %s\n", strerror(errno));
 
-   // open a connection
+    // open a connection
     rc = rdma_create_id(ctx->channel, &(ctx->cm_id), NULL, RDMA_PS_TCP);
     API_STATUS(
         rc, { goto free_channel; },
@@ -109,6 +110,12 @@ server_ctx_t *setup_server(struct sockaddr_in *addr, uint16_t port_id) {
         "Unable to bind RDMA device IP: %s. Reason: %s\n",
         inet_ntoa(addr->sin_addr), strerror(errno));
 
+    rc = (rdma_get_src_port(ctx->cm_id) == port_id) ? 1 : -1;
+    API_STATUS(
+        rc, { goto free_cm_id; },
+        "Mismatch in RDMA CM Bound Src Port: %u and User Src Port: %u\n",
+        rdma_get_src_port(ctx->cm_id), port_id);
+
     // listen for incoming requests on a connection
     rc = rdma_listen(ctx->cm_id, MAX_PENDING_CONNECTIONS);
     API_STATUS(
@@ -120,41 +127,41 @@ server_ctx_t *setup_server(struct sockaddr_in *addr, uint16_t port_id) {
     // init RDMA device resources - CQs/PDs/etc
     ctx->verbs = ctx->listen_id->verbs;
     ctx->pd = ibv_alloc_pd(ctx->verbs);
-    API_NULL(ctx->pd, { goto close_device; },
-	"Unable to alloc RDMA Protection Domain. Reason: %s\n",
-	strerror(errno));
+    API_NULL(
+        ctx->pd, { goto close_device; },
+        "Unable to alloc RDMA Protection Domain. Reason: %s\n",
+        strerror(errno));
 
     ctx->scq = ibv_create_cq(ctx->verbs, 128, NULL, NULL, 0);
-    API_NULL(ctx->scq, { goto free_pd; },
-	"Unable to create RDMA Send CQE of size 128 entries. Reason: %s\n",
-	strerror(errno));
+    API_NULL(
+        ctx->scq, { goto free_pd; },
+        "Unable to create RDMA Send CQE of size 128 entries. Reason: %s\n",
+        strerror(errno));
     ctx->rcq = ibv_create_cq(ctx->verbs, 128, NULL, NULL, 0);
-    API_NULL(ctx->rcq, { goto free_cq; },
-	"Unable to create RDMA Recv CQE of size 128 entries. Reason: %s\n",
-	strerror(errno));
+    API_NULL(
+        ctx->rcq, { goto free_cq; },
+        "Unable to create RDMA Recv CQE of size 128 entries. Reason: %s\n",
+        strerror(errno));
     // initialize event monitor
     ctx->evt_fn = &server_event_monitor;
     pthread_attr_init(&tattr);
     pthread_attr_setdetachstate(&tattr, PTHREAD_CREATE_DETACHED);
     pthread_mutex_init(&(ctx->evt_mtx), NULL);
     pthread_cond_init(&(ctx->evt_cv), NULL);
-    rc = pthread_create(&(ctx->evt_thread), &tattr, ctx->evt_fn,
-                        (void *)ctx);
+    rc = pthread_create(&(ctx->evt_thread), &tattr, ctx->evt_fn, (void *)ctx);
     API_STATUS(
-        rc, { goto free_cq; },
-        "Unable to create RDMA event channel monitor\n");
+        rc, { goto free_cq; }, "Unable to create RDMA event channel monitor\n");
 
     // Accept incoming valid client connections
     pthread_mutex_lock(&ctx->evt_mtx);
-    while(!ctx->listen_id) {
-	pthread_cond_wait(&ctx->evt_cv, &ctx->evt_mtx);
+    while (!ctx->listen_id) {
+        pthread_cond_wait(&ctx->evt_cv, &ctx->evt_mtx);
     }
 
     rc = rdma_accept(ctx->listen_id, NULL);
-    API_STATUS(rc, 
-	{ goto disconnect_free_cq; },
-	   "Unable to accept RDMA connection rqst. Reason: %s\n",
-	   strerror(errno));
+    API_STATUS(
+        rc, { goto disconnect_free_cq; },
+        "Unable to accept RDMA connection rqst. Reason: %s\n", strerror(errno));
 
     pthread_mutex_unlock(&ctx->evt_mtx);
 
@@ -164,7 +171,7 @@ server_ctx_t *setup_server(struct sockaddr_in *addr, uint16_t port_id) {
         pthread_cond_wait(&ctx->evt_cv, &ctx->evt_mtx);
     }
 
-    // Create RDMA QPs for initialized RDMA device rsc 
+    // Create RDMA QPs for initialized RDMA device rsc
     qp_attr.sq_sig_all = 1;
     qp_attr.cap.max_send_wr = 128;
     qp_attr.cap.max_recv_wr = 128;
@@ -172,9 +179,9 @@ server_ctx_t *setup_server(struct sockaddr_in *addr, uint16_t port_id) {
     qp_attr.send_cq = ctx->scq;
     qp_attr.recv_cq = ctx->rcq;
     rc = rdma_create_qp(ctx->listen_id, ctx->pd, &qp_attr);
-    API_STATUS(rc,
-	{ goto disconnect_free_cq; },
-	"Unable to RDMA QPs. Reason: %s\n", strerror(errno));
+    API_STATUS(
+        rc, { goto disconnect_free_cq; }, "Unable to RDMA QPs. Reason: %s\n",
+        strerror(errno));
     pthread_mutex_unlock(&ctx->evt_mtx);
 
     pthread_attr_destroy(&tattr);
@@ -187,10 +194,10 @@ disconnect_free_cq:
 
 free_cq:
     if (ctx->scq) {
-	    ibv_destroy_cq(ctx->scq);
+        ibv_destroy_cq(ctx->scq);
     }
     if (ctx->rcq) {
-	    ibv_destroy_cq(ctx->rcq);
+        ibv_destroy_cq(ctx->rcq);
     }
 free_pd:
     ibv_dealloc_pd(ctx->pd);

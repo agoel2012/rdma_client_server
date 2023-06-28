@@ -3,9 +3,9 @@
 
 #include <netinet/in.h>
 #include <stdarg.h>
+#include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
-#include <stdbool.h>
 #include <sys/types.h>
 
 /**
@@ -20,19 +20,19 @@ typedef void *(*thread_fn_t)(void *);
  */
 typedef struct server_ctx_s {
     /* RDMA Connection Specific Attributes */
-    struct rdma_cm_id *cm_id; //< RDMA CM Identifier
+    struct rdma_cm_id *cm_id;     //< RDMA CM Identifier
     struct rdma_cm_id *listen_id; //< RDMA CM Listen Identifier
-    struct ibv_context *verbs; //< Verbs Context
-    struct ibv_pd *pd; //< Verbs Protection Domain
-    struct ibv_cq *scq; //< Verbs Send CQ
-    struct ibv_cq *rcq; //< Verbs Recv CQ
+    struct ibv_context *verbs;    //< Verbs Context
+    struct ibv_pd *pd;            //< Verbs Protection Domain
+    struct ibv_cq *scq;           //< Verbs Send CQ
+    struct ibv_cq *rcq;           //< Verbs Recv CQ
 
     /* Event Monitor Specific attributes */
     struct rdma_event_channel *channel; //< RDMA Event Channel
-    pthread_t evt_thread; //< RDMA Event Thread
-    thread_fn_t evt_fn; //< RDMA Event Thread Function Callback
-    pthread_mutex_t evt_mtx; //< RDMA Event Thread Sync Mtx
-    pthread_cond_t evt_cv; //< RDMA Event Thread Sync Cv
+    pthread_t evt_thread;               //< RDMA Event Thread
+    thread_fn_t evt_fn;                 //< RDMA Event Thread Function Callback
+    pthread_mutex_t evt_mtx;            //< RDMA Event Thread Sync Mtx
+    pthread_cond_t evt_cv;              //< RDMA Event Thread Sync Cv
     bool is_connected;
 } server_ctx_t;
 
