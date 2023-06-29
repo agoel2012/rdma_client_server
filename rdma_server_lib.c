@@ -110,7 +110,7 @@ server_ctx_t *setup_server(struct sockaddr_in *addr, uint16_t port_id) {
         "Unable to bind RDMA device IP: %s. Reason: %s\n",
         inet_ntoa(addr->sin_addr), strerror(errno));
 
-    rc = (rdma_get_src_port(ctx->cm_id) == port_id) ? 1 : -1;
+    rc = (rdma_get_src_port(ctx->cm_id) == port_id) ? 0 : -1;
     API_STATUS(
         rc, { goto free_cm_id; },
         "Mismatch in RDMA CM Bound Src Port: %u and User Src Port: %u\n",
