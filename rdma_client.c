@@ -12,7 +12,10 @@
 
 #define CLIENT_ARGS 4
 
-static int start_client(client_info_t *sv) {
+static int start_client(const client_info_t *sv) {
+
+    // TODO: Debug the struct to ip conversion bug !
+
     client_ctx_t *ctx = setup_client(sv->my_addr, sv->peer_addr);
     API_NULL(
         ctx, { return -1; },
@@ -26,6 +29,6 @@ int main(int argc, char *argv[]) {
         return 1;
     }
 
-    client_info_t *sv = parse_caddress_info(argv[1], argv[2], argv[3]);
+    const client_info_t *sv = parse_caddress_info(argv[1], argv[2], argv[3]);
     return (start_client(sv));
 }

@@ -14,10 +14,6 @@
 #include <time.h>
 #include <unistd.h>
 
-#define MAX_PENDING_CONNECTIONS 64
-#define SKADDR_TO_IP(skaddr)                                                   \
-    inet_ntoa(((struct sockaddr_in *)(skaddr))->sin_addr)
-
 static void *client_event_monitor(void *arg) {
     client_ctx_t *ctx = (client_ctx_t *)(arg);
     struct rdma_cm_event *event = malloc(sizeof(struct rdma_cm_event));

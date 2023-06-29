@@ -13,6 +13,17 @@
 #include <sys/types.h>
 #include <unistd.h>
 
+#define MAX_PENDING_CONNECTIONS 64
+#define SOCKADDR2IPADDR(skaddr, ip)                                            \
+    do {                                                                       \
+        struct sockaddr_in *__inp = NULL;                                      \
+        __inp = (struct sockaddr_in *)(skaddr);                                \
+        (ip) = inet_ntoa(__inp->sin_addr);                                     \
+    } while (0)
+
+#define SKADDR_TO_IP(skaddr)                                                   \
+    inet_ntoa(((struct sockaddr_in *)(skaddr))->sin_addr)
+
 /**
  * @struct server_info_t
  * @brief Server Address Info Type
@@ -21,7 +32,7 @@ typedef struct server_info_s {
     struct sockaddr *ip_addr;
     uint16_t app_port;
     uint16_t rank;
-} server_info_t;
+} __attribute__((packed)) server_info_t;
 
 /**
  * @struct client_info_t
@@ -32,7 +43,7 @@ typedef struct client_info_s {
     struct sockaddr *peer_addr;
     uint16_t rank;
     int iterations;
-} client_info_t;
+} __attribute__((packed)) client_info_t;
 
 /**
  * @struct msgbuf_t
@@ -45,9 +56,7 @@ typedef struct msgbuf_s {
 // Use : as delimiter and separate out IP address and port
 static inline server_info_t *parse_saddress_info(char *args) {
     server_info_t *obj = (server_info_t *)calloc(1, sizeof(server_info_t));
-    struct addrinfo *res;
-    struct addrinfo hints = {};
-    memset(&hints, 0, sizeof(struct addrinfo));
+    struct sockaddr_in server_addr_in = {};
 
     // Find where TCP port begins
     char *port = strstr(args, ":");
@@ -65,17 +74,12 @@ static inline server_info_t *parse_saddress_info(char *args) {
     obj->app_port = (uint16_t)atoi(port);
 
     // Store the IP, port into sockaddr structure
-    hints.ai_family = AF_INET;
-    hints.ai_socktype = SOCK_STREAM;
-    hints.ai_flags = AI_PASSIVE;
-    getaddrinfo(ip, port, &hints, &res);
-    obj->ip_addr = malloc(sizeof(struct sockaddr));
-    for (struct addrinfo *a = res; a; a = a->ai_next) {
-        memcpy(obj->ip_addr, a->ai_addr, a->ai_addrlen);
-        break;
-    }
-
-    freeaddrinfo(res);
+    obj->ip_addr = calloc(1, sizeof(struct sockaddr));
+    server_addr_in.sin_family = AF_INET;
+    server_addr_in.sin_port = htons(obj->app_port);
+    inet_pton(AF_INET, ip, (void *)&(server_addr_in.sin_addr));
+    memcpy(obj->ip_addr, (struct sockaddr *)(&server_addr_in),
+           sizeof(struct sockaddr));
 
     // Extract rank from IP octet
     obj->rank = ntohl(inet_addr(ip));
@@ -90,10 +94,8 @@ static inline server_info_t *parse_saddress_info(char *args) {
 static inline client_info_t *parse_caddress_info(char *sip, char *__dip,
                                                  char *iterations) {
     client_info_t *obj = (client_info_t *)calloc(1, sizeof(client_info_t));
-    struct addrinfo *res;
-    struct addrinfo hints = {};
-    memset(&hints, 0, sizeof(struct addrinfo));
-    printf("SIP: %s DIP: %s\n", sip, __dip);
+    struct sockaddr_in server_addr_in = {};
+    struct sockaddr_in client_addr_in = {};
 
     // Find where TCP port begins
     char *port = strstr(__dip, ":");
@@ -108,33 +110,31 @@ static inline client_info_t *parse_caddress_info(char *sip, char *__dip,
 
     // Calculate TCP port from port string
     port++;
+    int p = (uint16_t)atoi(port);
 
     // Store the IP, port into sockaddr structure
     obj->my_addr = malloc(sizeof(struct sockaddr));
-    hints.ai_family = AF_INET;
-    hints.ai_socktype = SOCK_STREAM;
-    hints.ai_flags = AI_PASSIVE;
-    getaddrinfo(sip, NULL, &hints, &res);
-    for (struct addrinfo *a = res; a; a = a->ai_next) {
-        memcpy(obj->my_addr, a->ai_addr, a->ai_addrlen);
-        break;
-    }
-    freeaddrinfo(res);
-
-    hints.ai_flags &= ~AI_PASSIVE;
-    getaddrinfo(dip, port, &hints, &res);
     obj->peer_addr = malloc(sizeof(struct sockaddr));
-    for (struct addrinfo *a = res; a; a = a->ai_next) {
-        memcpy(obj->peer_addr, a->ai_addr, a->ai_addrlen);
-        break;
-    }
-    freeaddrinfo(res);
+    server_addr_in.sin_family = AF_INET;
+    server_addr_in.sin_port = htons(p);
+    inet_pton(AF_INET, dip, (void *)&(server_addr_in.sin_addr));
+    memcpy(obj->peer_addr, (struct sockaddr *)(&server_addr_in),
+           sizeof(struct sockaddr));
+
+    client_addr_in.sin_family = AF_INET;
+    client_addr_in.sin_port = 0;
+    inet_pton(AF_INET, sip, (void *)&(client_addr_in.sin_addr));
+    memcpy(obj->my_addr, (struct sockaddr *)(&client_addr_in),
+           sizeof(struct sockaddr));
+
+    printf("PEER: %s\n", SKADDR_TO_IP(obj->peer_addr));
+    printf("MY: %s\n", SKADDR_TO_IP(obj->my_addr));
 
     // Extract rank from IP octet
-    obj->rank = ntohl(inet_addr(sip));
+    obj->rank = (uint16_t)ntohl(inet_addr(sip));
 
     // Store the rank and iterations into obj structure
-    obj->iterations = atoi(iterations);
+    obj->iterations = (int)atoi(iterations);
     printf("Client IP: %s, Iterations: %s, Rank: %u => Target Server: %s:%s\n",
            sip, iterations, obj->rank, dip, port);
     free(dip);
