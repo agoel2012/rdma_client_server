@@ -59,7 +59,7 @@ typedef struct server_ctx_s {
  * @brief Given a user-defined IP and port, setup the server
  * control plane
  */
-server_ctx_t *setup_server(struct sockaddr_in *addr, uint16_t port_id);
+server_ctx_t *setup_server(struct sockaddr *addr, uint16_t port_id);
 
 /**
  * @brief Given a user-defined msgbuf and nbytes, process the data

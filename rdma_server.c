@@ -17,7 +17,7 @@ int start_server(server_info_t *sv) {
     int rc = 0;
 
     // Setup Server control plane
-    server_ctx_t *ctx = setup_server(&sv->ip_addr, sv->app_port);
+    server_ctx_t *ctx = setup_server(sv->ip_addr, sv->app_port);
     API_NULL(
         ctx, { return (-1); }, "Server Setup Failed\n");
 

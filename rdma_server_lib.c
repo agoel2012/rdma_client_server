@@ -14,6 +14,8 @@
 #include <unistd.h>
 
 #define MAX_PENDING_CONNECTIONS 64
+#define SKADDR_TO_IP(skaddr)                                                   \
+    inet_ntoa(((struct sockaddr_in *)(skaddr))->sin_addr)
 
 static void *server_event_monitor(void *arg) {
     server_ctx_t *ctx = (server_ctx_t *)(arg);
@@ -33,9 +35,7 @@ static void *server_event_monitor(void *arg) {
         switch (event->event) {
         case RDMA_CM_EVENT_CONNECT_REQUEST: {
             pthread_mutex_lock(&(ctx->evt_mtx));
-            ctx->listen_id =
-                (event->listen_id); // TODO: Is this a ptr or reference that
-                                    // needs to be deepcopied ?
+            ctx->listen_id = (event->id);
             pthread_cond_signal(&(ctx->evt_cv));
             pthread_mutex_unlock(&(ctx->evt_mtx));
         } break;
@@ -62,7 +62,7 @@ static void *server_event_monitor(void *arg) {
     return (NULL);
 }
 
-server_ctx_t *setup_server(struct sockaddr_in *addr, uint16_t port_id) {
+server_ctx_t *setup_server(struct sockaddr *addr, uint16_t port_id) {
     int rc = 0;
     pthread_attr_t tattr;
     int ndevices = 0;
@@ -82,15 +82,6 @@ server_ctx_t *setup_server(struct sockaddr_in *addr, uint16_t port_id) {
     API_NULL(
         ctx, { return (NULL); }, "Unable to allocate server context\n");
 
-    ctx->cm_id = calloc(1, sizeof(struct rdma_cm_id));
-    API_NULL(
-        ctx->cm_id,
-        {
-            free(ctx);
-            return (NULL);
-        },
-        "Unable to allocate server cm id object\n");
-
     // create an event channel
     ctx->channel = rdma_create_event_channel();
     API_NULL(
@@ -104,17 +95,11 @@ server_ctx_t *setup_server(struct sockaddr_in *addr, uint16_t port_id) {
         "Unable to create RDMA Connection ID. Reason: %s\n", strerror(errno));
 
     // bind a connection to an IP address
-    rc = rdma_bind_addr(ctx->cm_id, (struct sockaddr *)(addr));
+    rc = rdma_bind_addr(ctx->cm_id, addr);
     API_STATUS(
         rc, { goto free_cm_id; },
-        "Unable to bind RDMA device IP: %s. Reason: %s\n",
-        inet_ntoa(addr->sin_addr), strerror(errno));
-
-    rc = (rdma_get_src_port(ctx->cm_id) == port_id) ? 0 : -1;
-    API_STATUS(
-        rc, { goto free_cm_id; },
-        "Mismatch in RDMA CM Bound Src Port: %u and User Src Port: %u\n",
-        rdma_get_src_port(ctx->cm_id), port_id);
+        "Unable to bind RDMA device IP: %s. Reason: %s\n", SKADDR_TO_IP(addr),
+        strerror(errno));
 
     // listen for incoming requests on a connection
     rc = rdma_listen(ctx->cm_id, MAX_PENDING_CONNECTIONS);
@@ -122,26 +107,8 @@ server_ctx_t *setup_server(struct sockaddr_in *addr, uint16_t port_id) {
         rc, { goto free_cm_id; },
         "Unable to listen for incoming requests on RDMA device IP: %s. Reason: "
         "%s\n",
-        inet_ntoa(addr->sin_addr), strerror(errno));
+        SKADDR_TO_IP(addr), strerror(errno));
 
-    // init RDMA device resources - CQs/PDs/etc
-    ctx->verbs = ctx->listen_id->verbs;
-    ctx->pd = ibv_alloc_pd(ctx->verbs);
-    API_NULL(
-        ctx->pd, { goto close_device; },
-        "Unable to alloc RDMA Protection Domain. Reason: %s\n",
-        strerror(errno));
-
-    ctx->scq = ibv_create_cq(ctx->verbs, 128, NULL, NULL, 0);
-    API_NULL(
-        ctx->scq, { goto free_pd; },
-        "Unable to create RDMA Send CQE of size 128 entries. Reason: %s\n",
-        strerror(errno));
-    ctx->rcq = ibv_create_cq(ctx->verbs, 128, NULL, NULL, 0);
-    API_NULL(
-        ctx->rcq, { goto free_cq; },
-        "Unable to create RDMA Recv CQE of size 128 entries. Reason: %s\n",
-        strerror(errno));
     // initialize event monitor
     ctx->evt_fn = &server_event_monitor;
     pthread_attr_init(&tattr);
@@ -150,20 +117,54 @@ server_ctx_t *setup_server(struct sockaddr_in *addr, uint16_t port_id) {
     pthread_cond_init(&(ctx->evt_cv), NULL);
     rc = pthread_create(&(ctx->evt_thread), &tattr, ctx->evt_fn, (void *)ctx);
     API_STATUS(
-        rc, { goto free_cq; }, "Unable to create RDMA event channel monitor\n");
+        rc, { goto free_cm_id; },
+        "Unable to create RDMA event channel monitor\n");
 
     // Accept incoming valid client connections
     pthread_mutex_lock(&ctx->evt_mtx);
     while (!ctx->listen_id) {
         pthread_cond_wait(&ctx->evt_cv, &ctx->evt_mtx);
     }
+    pthread_mutex_unlock(&ctx->evt_mtx);
+
+    // init RDMA device resources - CQs/PDs/etc
+    ctx->verbs = ctx->listen_id->verbs;
+    struct ibv_device_attr dev_attr = {};
+    rc = ibv_query_device(ctx->verbs, &dev_attr);
+    assert(!(dev_attr.max_cqe < 1024));
+
+    ctx->pd = ibv_alloc_pd(ctx->verbs);
+    API_NULL(
+        ctx->pd, { goto close_device; },
+        "Unable to alloc RDMA Protection Domain. Reason: %s\n",
+        strerror(errno));
+
+    ctx->scq = ibv_create_cq(ctx->verbs, 1024, NULL, NULL, 0);
+    API_NULL(
+        ctx->scq, { goto free_pd; },
+        "Unable to create RDMA Send CQE of size 128 entries. Reason: %s\n",
+        strerror(errno));
+
+    // Create RDMA QPs for initialized RDMA device rsc
+    qp_attr.cap.max_send_sge = 1;
+    qp_attr.cap.max_recv_sge = 1;
+    qp_attr.cap.max_send_wr = 1024;
+    qp_attr.cap.max_recv_wr = 1024;
+    qp_attr.qp_context = NULL;
+    qp_attr.sq_sig_all = 0;
+    qp_attr.srq = NULL;
+    qp_attr.qp_type = IBV_QPT_RC;
+    qp_attr.send_cq = ctx->scq;
+    qp_attr.recv_cq = ctx->scq;
+    rc = rdma_create_qp(ctx->listen_id, ctx->pd, &qp_attr);
+    API_STATUS(
+        rc, { goto disconnect_free_cq; }, "Unable to RDMA QPs. Reason: %s\n",
+        strerror(errno));
 
     rc = rdma_accept(ctx->listen_id, NULL);
     API_STATUS(
         rc, { goto disconnect_free_cq; },
         "Unable to accept RDMA connection rqst. Reason: %s\n", strerror(errno));
-
-    pthread_mutex_unlock(&ctx->evt_mtx);
 
     // Assert that connection is established
     pthread_mutex_lock(&ctx->evt_mtx);
@@ -171,17 +172,6 @@ server_ctx_t *setup_server(struct sockaddr_in *addr, uint16_t port_id) {
         pthread_cond_wait(&ctx->evt_cv, &ctx->evt_mtx);
     }
 
-    // Create RDMA QPs for initialized RDMA device rsc
-    qp_attr.sq_sig_all = 1;
-    qp_attr.cap.max_send_wr = 128;
-    qp_attr.cap.max_recv_wr = 128;
-    qp_attr.cap.max_inline_data = 64;
-    qp_attr.send_cq = ctx->scq;
-    qp_attr.recv_cq = ctx->rcq;
-    rc = rdma_create_qp(ctx->listen_id, ctx->pd, &qp_attr);
-    API_STATUS(
-        rc, { goto disconnect_free_cq; }, "Unable to RDMA QPs. Reason: %s\n",
-        strerror(errno));
     pthread_mutex_unlock(&ctx->evt_mtx);
 
     pthread_attr_destroy(&tattr);
@@ -192,13 +182,6 @@ disconnect_free_cq:
     rdma_disconnect(ctx->listen_id);
     pthread_attr_destroy(&tattr);
 
-free_cq:
-    if (ctx->scq) {
-        ibv_destroy_cq(ctx->scq);
-    }
-    if (ctx->rcq) {
-        ibv_destroy_cq(ctx->rcq);
-    }
 free_pd:
     ibv_dealloc_pd(ctx->pd);
 close_device:
@@ -208,7 +191,6 @@ free_cm_id:
 free_channel:
     rdma_destroy_event_channel(ctx->channel);
 free_ctx_fields:
-    free(ctx->cm_id);
     free(ctx);
     return (NULL);
 }

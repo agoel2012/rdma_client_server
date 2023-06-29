@@ -20,12 +20,13 @@ typedef void *(*thread_fn_t)(void *);
  */
 typedef struct client_ctx_s {
     /* RDMA Connection Specific Attributes */
-    struct rdma_cm_id *cm_id;     //< RDMA CM Identifier
-    struct rdma_cm_id *listen_id; //< RDMA CM Listen Identifier
-    struct ibv_context *verbs;    //< Verbs Context
-    struct ibv_pd *pd;            //< Verbs Protection Domain
-    struct ibv_cq *scq;           //< Verbs Send CQ
-    struct ibv_cq *rcq;           //< Verbs Recv CQ
+    struct rdma_cm_id *cm_id;      //< RDMA CM Core Identifier
+    struct rdma_cm_id *addr_id;    //< RDMA CM Address Identifier
+    struct rdma_cm_id *connect_id; //< RDMA CM Connect Identifier
+    struct ibv_context *verbs;     //< Verbs Context
+    struct ibv_pd *pd;             //< Verbs Protection Domain
+    struct ibv_cq *scq;            //< Verbs Send CQ
+    struct ibv_cq *rcq;            //< Verbs Recv CQ
 
     /* Event Monitor Specific attributes */
     struct rdma_event_channel *channel; //< RDMA Event Channel
@@ -59,8 +60,8 @@ typedef struct client_ctx_s {
  * @brief Given a source and target IP address, setup & connect a client
  * control plane to a target server
  */
-client_ctx_t *setup_client(struct sockaddr_in *src_addr,
-                           struct sockaddr_in *dst_addr);
+client_ctx_t *setup_client(struct sockaddr *src_addr,
+                           struct sockaddr *dst_addr);
 
 /**
  * @brief Given a user-defined msgbuf and nbytes, process the data
