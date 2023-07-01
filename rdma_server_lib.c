@@ -236,12 +236,12 @@ int prepare_server_data(server_ctx_t *ctx) {
     size_t recv_sz = 1048576;
     // Allocate 1MB of buffer space
     void *send_buf = mmap(NULL, send_sz, PROT_READ | PROT_WRITE,
-                          MAP_PRIVATE | MAP_ANONYMOUS | MAP_HUGETLB, -1, 0);
+                          MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
     EXT_API_STATUS(
         send_buf == MAP_FAILED, { return (-1); },
         "Unable to allocate 1MB send buffer. Reason: %s\n", strerror(errno));
     void *recv_buf = mmap(NULL, recv_sz, PROT_READ | PROT_WRITE,
-                          MAP_PRIVATE | MAP_ANONYMOUS | MAP_HUGETLB, -1, 0);
+                          MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
     EXT_API_STATUS(
         recv_buf == MAP_FAILED,
         {
@@ -312,7 +312,7 @@ int send_recv_server(server_ctx_t *ctx) {
     recv_wr.next = NULL;
     recv_wr.sg_list = &sge;
     recv_wr.num_sge = 1;
-    rc = ibv_post_recv(ctx->cm_id->qp, &recv_wr, &recv_bad_wr);
+    rc = ibv_post_recv(ctx->listen_id->qp, &recv_wr, &recv_bad_wr);
     API_STATUS(
         rc, { return (-1); }, "Unable to post receive wr. Reason: %s\n",
         strerror(errno));
@@ -337,7 +337,7 @@ int send_recv_server(server_ctx_t *ctx) {
     // remote address doesn't matter
     send_wr.wr.rdma.remote_addr = 0;
     send_wr.wr.rdma.rkey = 0;
-    rc = ibv_post_send(ctx->cm_id->qp, &send_wr, &send_bad_wr);
+    rc = ibv_post_send(ctx->listen_id->qp, &send_wr, &send_bad_wr);
     API_STATUS(
         rc, { return (-1); }, "Unable to post send request. Reason: %s\n",
         strerror(errno));

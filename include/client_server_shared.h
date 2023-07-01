@@ -74,8 +74,8 @@
 
 #define TIME_GET_ELAPSED_TIME(nsec_elapsed)                                    \
     clock_gettime(CLOCK_MONOTONIC, &__end);                                    \
-    (nsec_elapsed) = (__end.tv_nsec * (NSEC_TO_SEC) + __end.tv_sec) -          \
-                     (__start.tv_nsec * (NSEC_TO_SEC) + __start.tv_sec);
+    (nsec_elapsed) = (__end.tv_nsec + (__end.tv_sec * NSEC_TO_SEC)) -          \
+                     (__start.tv_nsec + (__start.tv_sec * NSEC_TO_SEC));
 
 /**
  * @struct server_info_t
@@ -215,10 +215,6 @@ static inline int randomize_buf(void **buf, size_t nbytes) {
     // Randomize Tx on client before send
     srand(time(NULL));
     for (i = 0; i < nbytes; i++) {
-        if (i % 8 == 0) {
-            printf("\n");
-        }
-
         *(uint8_t *)(*buf + i) = (rand() % 256);
     }
 

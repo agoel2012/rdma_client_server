@@ -232,12 +232,12 @@ int prepare_client_data(client_ctx_t *ctx, int opc) {
 
     // Allocate 1MB of buffer space
     void *send_buf = mmap(NULL, send_sz, PROT_READ | PROT_WRITE,
-                          MAP_PRIVATE | MAP_ANONYMOUS | MAP_HUGETLB, -1, 0);
+                          MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
     EXT_API_STATUS(
         send_buf == MAP_FAILED, { return (-1); },
         "Unable to allocate 1MB send buffer. Reason: %s\n", strerror(errno));
     void *recv_buf = mmap(NULL, recv_sz, PROT_READ | PROT_WRITE,
-                          MAP_PRIVATE | MAP_ANONYMOUS | MAP_HUGETLB, -1, 0);
+                          MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
     EXT_API_STATUS(
         recv_buf == MAP_FAILED,
         {
@@ -422,5 +422,6 @@ int send_client_request(client_ctx_t *ctx, int opc) {
 int process_client_response(client_ctx_t *ctx, int opc) {
     // Based on the opcode, inspect the response and compare against request
     // if it matches, operation was successful
-    return -1;
+    return (memcmp(ctx->send_client_buf, ctx->recv_client_buf,
+                   ctx->send_client_buf_sz));
 }
