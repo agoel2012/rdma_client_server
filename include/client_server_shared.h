@@ -25,6 +25,60 @@
     inet_ntoa(((struct sockaddr_in *)(skaddr))->sin_addr)
 
 /**
+ * @name API_STATUS_INTERNAL
+ * @brief Convenience macro to check predicate, log error on console
+ * and return
+ */
+#define API_STATUS_INTERNAL(expr, code_block, ...)                             \
+    do {                                                                       \
+        if (expr) {                                                            \
+            printf(__VA_ARGS__);                                               \
+            code_block;                                                        \
+        }                                                                      \
+    } while (0)
+
+#define API_STATUS(rv, code_block, ...)                                        \
+    API_STATUS_INTERNAL(((rv) < 0), code_block, __VA_ARGS__)
+
+#define EXT_API_STATUS(exp, code_block, ...)                                   \
+    API_STATUS_INTERNAL(exp, code_block, __VA_ARGS__)
+
+#define API_NULL(obj, code_block, ...)                                         \
+    API_STATUS_INTERNAL(((obj) == NULL), code_block, __VA_ARGS__)
+
+/**
+ * @name RDMA_ACCESS_FLAG
+ * @brief shared flags for client/server datapath
+ */
+#define RDMA_ACCESS_FLAGS (IBV_ACCESS_LOCAL_WRITE | IBV_ACCESS_REMOTE_WRITE)
+
+/**
+ * @name OPC_RDMA_READ/OPC_SEND_ONLY/OPC_RDMA_WRITE
+ * @brief shared opcode(s) for client/server datapath
+ */
+#define OPC_RDMA_READ 0x01
+#define OPC_SEND_ONLY 0x02
+#define OPC_RDMA_WRITE 0x04
+
+/**
+ * @name TIME_DECLARATIONS/TIME_START/TIME_GET_ELAPSED_TIME
+ * @brief shared wall-clock time measurement utilities for client/server
+ */
+#define NSEC_TO_SEC (1000000000ULL)
+
+#define TIME_DECLARATIONS()                                                    \
+    struct timespec __start;                                                   \
+    struct timespec __end;                                                     \
+    uint64_t __diff = 0;
+
+#define TIME_START() clock_gettime(CLOCK_MONOTONIC, &__start);
+
+#define TIME_GET_ELAPSED_TIME(nsec_elapsed)                                    \
+    clock_gettime(CLOCK_MONONTIC, &__end);                                     \
+    (nsec_elapsed) = (__end.tv_nsec * (NSEC_TO_SEC) + __end.tv_sec) -          \
+                     (__start.tv_nsec * (NSEC_TO_SEC) + __start.tv_sec);
+
+/**
  * @struct server_info_t
  * @brief Server Address Info Type
  */

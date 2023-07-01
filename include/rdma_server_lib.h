@@ -48,28 +48,7 @@ typedef struct server_ctx_s {
     size_t recv_client_buf_sz;  //< size of recv for send buf
     struct ibv_mr *send_buf_mr; //< RDMA compliant send buf mr
     struct ibv_mr *recv_buf_mr; //< RDMA compliant recv buf mr
-    int lkey;                   //< RDMA compliant local pkey
-    int rkey;                   //< RDMA complaint remote pkey
 } server_ctx_t;
-
-/**
- * @name API_STATUS_INTERNAL
- * @brief Convenience macro to check predicate, log error on console
- * and return
- */
-#define API_STATUS_INTERNAL(expr, code_block, ...)                             \
-    do {                                                                       \
-        if (expr) {                                                            \
-            printf(__VA_ARGS__);                                               \
-            code_block;                                                        \
-        }                                                                      \
-    } while (0)
-
-#define API_STATUS(rv, code_block, ...)                                        \
-    API_STATUS_INTERNAL(((rv) < 0), code_block, __VA_ARGS__)
-
-#define API_NULL(obj, code_block, ...)                                         \
-    API_STATUS_INTERNAL(((obj) == NULL), code_block, __VA_ARGS__)
 
 /**
  * @brief Given a user-defined IP and port, setup the server

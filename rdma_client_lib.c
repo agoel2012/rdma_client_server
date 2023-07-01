@@ -9,6 +9,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/epoll.h>
+#include <sys/mman.h>
 #include <sys/socket.h>
 #include <sys/types.h>
 #include <time.h>
@@ -222,14 +223,71 @@ free_ctx_fields:
 }
 
 int prepare_client_data(client_ctx_t *ctx, int opc) {
+    size_t send_sz = 1048576;
+    size_t recv_sz = 1048576;
     // Based on the opcode, allocate req & response structures
     // Register memory with RDMA stack, if needed
     // Save keys and mrs into ctx, if needed
-    // Exchange addresses with server for RDMA_READ/WRITE
-    // IBV_SEND: allocate in buf, no register, no exchg
-    // RDMA_READ/WRITE: allocate in/out buf, register in/out, exchg in/out and
-    // keys
-    return -1;
+
+    // Allocate 1MB of buffer space
+    void *send_buf =
+        mmap(NULL, 0, PROT_READ | PROT_WRITE,
+             MAP_PRIVATE | MAP_ANONYMOUS | MAP_HUGETLB, send_sz, 0);
+    EXT_API_STATUS(
+        send_buf == MAP_FAILED, { return (-1); },
+        "Unable to allocate 1MB send buffer\n");
+    void *recv_buf =
+        mmap(NULL, 0, PROT_READ | PROT_WRITE,
+             MAP_PRIVATE | MAP_ANONYMOUS | MAP_HUGETLB, recv_sz, 0);
+    EXT_API_STATUS(
+        recv_buf == MAP_FAILED,
+        {
+            munmap(send_buf, send_sz);
+            return (-1);
+        },
+        "Unable to allocate 1MB recv buffer\n");
+
+    ctx->send_client_buf = send_buf;
+    ctx->send_client_buf_sz = send_sz;
+    ctx->recv_client_buf = recv_buf;
+    ctx->recv_client_buf_sz = recv_sz;
+
+    // IBV_OPC_SEND_ONLY: allocate in buf, no register, no exchg
+    // OPC_RDMA_READ/WRITE: allocate in/out buf, register in/out, exchg in/out
+    // and keys
+    if (opc == OPC_RDMA_READ || opc == OPC_RDMA_WRITE) {
+        ctx->send_buf_mr =
+            ibv_reg_mr(ctx->pd, send_buf, send_sz, RDMA_ACCESS_FLAGS);
+        API_NULL(
+            ctx->send_buf_mr,
+            {
+                munmap(send_buf, send_sz);
+                munmap(recv_buf, recv_sz);
+                return (-1);
+            },
+            "Unable to register send buf with RDMA. Reason: %s\n",
+            strerror(errno));
+        ctx->recv_buf_mr =
+            ibv_reg_mr(ctx->pd, recv_buf, recv_sz, RDMA_ACCESS_FLAGS);
+        API_NULL(
+            ctx->send_buf_mr,
+            {
+                munmap(send_buf, send_sz);
+                munmap(recv_buf, recv_sz);
+                ibv_dereg_mr(ctx->send_buf_mr);
+                return (-1);
+            },
+            "Unable to register recv buf with RDMA. Reason: %s\n",
+            strerror(errno));
+    } else {
+        ctx->send_buf_mr = NULL;
+        ctx->recv_buf_mr = NULL;
+    }
+
+    randomize_buf(&(ctx->send_client_buf), ctx->send_client_buf_sz);
+    // Exchange addresses with server for OPC_RDMA_READ/WRITE
+    // TODO: Use TCP-IP client/server socket to exchg this
+    return 0;
 }
 
 static void *client_wcq_monitor(void *arg) {
@@ -259,25 +317,24 @@ int send_client_request(client_ctx_t *ctx, int opc) {
     // Based on the opcode, prepare wqe structures
     // Start a separate thread to poll for completion
     // use IMM: to distinguish between no RDMA vs RDMA follow-up
-    // IBV_SEND: no lkey, rkey is needed, data is copied into rdma internal buf
-    // by rdma stack
-    // RDMA_READ/WRITE: mr and key is needed, zcopy using registered memory
-    // Protocol-1: Measure RTT time from client<->server
+    // OPC_SEND_ONLY: no lkey, rkey is needed, data is copied into rdma internal
+    // buf by rdma stack OPC_RDMA_READ/WRITE: mr and key is needed, zcopy using
+    // registered memory Protocol-1: Measure RTT time from client<->server
     // ------------------------------------------------
     // time_start()
     // IBV_RECV
     //                      IBV_RECV
     // IBV_SEND --------->  IBV_WC_RECV_RDMA_WITH_IMM
-    //                      based on IMM1, reply with IBV_SEND
+    //                      based on IMM1, reply with OPC_SEND_ONLY
     // IBV_WC_RECV_RDMA <---IBV_SEND
     // time_end()
     //
-    // Protocol-2: Measure RDMA_WRITE RTT from client<->server
+    // Protocol-2: Measure OPC_RDMA_WRITE RTT from client<->server
     // -------------------------------------------------
     // time_start()
     //                      IBV_RECV
     // IBV_SEND --------->  IBV_WC_RECV_RDMA_WITH_IMM
-    //                      based on IMM2, reply with RDMA_WRITE IMM notify
+    //                      based on IMM2, reply with OPC_RDMA_WRITE IMM notify
     // RDMA_WRITE_IMM -------->
     //                      IBV_WC_RDMA_WRITE_IMM
     //              <-------RDMA_WRITE_IMM
