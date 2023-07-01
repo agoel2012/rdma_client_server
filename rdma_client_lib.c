@@ -156,15 +156,15 @@ client_ctx_t *setup_client(struct sockaddr *src_addr,
         "Unable to alloc RDMA Protection Domain. Reason: %s\n",
         strerror(errno));
 
-    ctx->scq = ibv_create_cq(ctx->verbs, 128, NULL, NULL, 0);
+    ctx->scq = ibv_create_cq(ctx->verbs, MAX_CQE, NULL, NULL, 0);
     API_NULL(
         ctx->scq, { goto free_pd; },
-        "Unable to create RDMA Send CQE of size 128 entries. Reason: %s\n",
-        strerror(errno));
+        "Unable to create RDMA Send CQE of size %d entries. Reason: %s\n",
+        MAX_CQE, strerror(errno));
 
     // Create RDMA QPs for initialized RDMA device rsc
-    qp_attr.cap.max_send_wr = 128;
-    qp_attr.cap.max_recv_wr = 128;
+    qp_attr.cap.max_send_wr = MAX_SEND_WR;
+    qp_attr.cap.max_recv_wr = MAX_RECV_WR;
     qp_attr.cap.max_send_sge = 1;
     qp_attr.cap.max_recv_sge = 1;
     qp_attr.qp_type = IBV_QPT_RC;
@@ -228,98 +228,120 @@ int prepare_client_data(client_ctx_t *ctx, int opc) {
     // Based on the opcode, allocate req & response structures
     // Register memory with RDMA stack, if needed
     // Save keys and mrs into ctx, if needed
+    // Exchange addresses with server for OPC_RDMA_READ/WRITE
 
     // Allocate 1MB of buffer space
-    void *send_buf =
-        mmap(NULL, 0, PROT_READ | PROT_WRITE,
-             MAP_PRIVATE | MAP_ANONYMOUS | MAP_HUGETLB, send_sz, 0);
+    void *send_buf = mmap(NULL, send_sz, PROT_READ | PROT_WRITE,
+                          MAP_PRIVATE | MAP_ANONYMOUS | MAP_HUGETLB, -1, 0);
     EXT_API_STATUS(
         send_buf == MAP_FAILED, { return (-1); },
-        "Unable to allocate 1MB send buffer\n");
-    void *recv_buf =
-        mmap(NULL, 0, PROT_READ | PROT_WRITE,
-             MAP_PRIVATE | MAP_ANONYMOUS | MAP_HUGETLB, recv_sz, 0);
+        "Unable to allocate 1MB send buffer. Reason: %s\n", strerror(errno));
+    void *recv_buf = mmap(NULL, recv_sz, PROT_READ | PROT_WRITE,
+                          MAP_PRIVATE | MAP_ANONYMOUS | MAP_HUGETLB, -1, 0);
     EXT_API_STATUS(
         recv_buf == MAP_FAILED,
         {
             munmap(send_buf, send_sz);
             return (-1);
         },
-        "Unable to allocate 1MB recv buffer\n");
+        "Unable to allocate 1MB recv buffer. Reason: %s\n", strerror(errno));
 
     ctx->send_client_buf = send_buf;
     ctx->send_client_buf_sz = send_sz;
     ctx->recv_client_buf = recv_buf;
     ctx->recv_client_buf_sz = recv_sz;
 
-    // IBV_OPC_SEND_ONLY: allocate in buf, no register, no exchg
+    // IBV_OPC_SEND_ONLY: allocate in buf, register in/out, no exchg
     // OPC_RDMA_READ/WRITE: allocate in/out buf, register in/out, exchg in/out
     // and keys
-    if (opc == OPC_RDMA_READ || opc == OPC_RDMA_WRITE) {
-        ctx->send_buf_mr =
-            ibv_reg_mr(ctx->pd, send_buf, send_sz, RDMA_ACCESS_FLAGS);
-        API_NULL(
-            ctx->send_buf_mr,
-            {
-                munmap(send_buf, send_sz);
-                munmap(recv_buf, recv_sz);
-                return (-1);
-            },
-            "Unable to register send buf with RDMA. Reason: %s\n",
-            strerror(errno));
-        ctx->recv_buf_mr =
-            ibv_reg_mr(ctx->pd, recv_buf, recv_sz, RDMA_ACCESS_FLAGS);
-        API_NULL(
-            ctx->send_buf_mr,
-            {
-                munmap(send_buf, send_sz);
-                munmap(recv_buf, recv_sz);
-                ibv_dereg_mr(ctx->send_buf_mr);
-                return (-1);
-            },
-            "Unable to register recv buf with RDMA. Reason: %s\n",
-            strerror(errno));
-    } else {
-        ctx->send_buf_mr = NULL;
-        ctx->recv_buf_mr = NULL;
-    }
+    ctx->send_buf_mr =
+        ibv_reg_mr(ctx->pd, send_buf, send_sz, RDMA_ACCESS_FLAGS);
+    API_NULL(
+        ctx->send_buf_mr,
+        {
+            munmap(send_buf, send_sz);
+            munmap(recv_buf, recv_sz);
+            return (-1);
+        },
+        "Unable to register send buf with RDMA. Reason: %s\n", strerror(errno));
+    ctx->recv_buf_mr =
+        ibv_reg_mr(ctx->pd, recv_buf, recv_sz, RDMA_ACCESS_FLAGS);
+    API_NULL(
+        ctx->recv_buf_mr,
+        {
+            munmap(send_buf, send_sz);
+            munmap(recv_buf, recv_sz);
+            ibv_dereg_mr(ctx->send_buf_mr);
+            return (-1);
+        },
+        "Unable to register recv buf with RDMA. Reason: %s\n", strerror(errno));
 
     randomize_buf(&(ctx->send_client_buf), ctx->send_client_buf_sz);
-    // Exchange addresses with server for OPC_RDMA_READ/WRITE
+
     // TODO: Use TCP-IP client/server socket to exchg this
+    if (opc == OPC_RDMA_READ || opc == OPC_RDMA_WRITE) {
+        return (-1);
+    }
+
     return 0;
 }
 
 static void *client_wcq_monitor(void *arg) {
     client_ctx_t *ctx = (client_ctx_t *)(arg);
-#if 0
-    ibv_wc_t wc[MAX_CQE] = {0};
 
-    while(ctx->is_connected) {
-        rc = ibv_poll_cq(ctx->scq, &wc);
-        for (int i = 0; i < n_wcqe; i++) {
+    int ncqe = 0;
+    struct ibv_wc wc[MAX_CQE] = {0};
+
+    while (ctx->is_connected) {
+        ncqe = ibv_poll_cq(ctx->scq, MAX_CQE, &wc[0]);
+        for (int i = 0; i < ncqe; i++) {
             // Check for errors
+            if (wc[i].status != IBV_WC_SUCCESS) {
+                printf("WCQE for WR[%ld] Status: %s\n", wc[i].wr_id,
+                       ibv_wc_status_str(wc[i].status));
+            }
+
             // Based on the opcode decide the action
             switch (wc[i].opcode) {
+            case IBV_WC_RECV:
             case IBV_WC_RECV_RDMA_WITH_IMM:
+                pthread_mutex_lock(&(ctx->wcq_mtx));
+                ctx->rtt_done = 1;
+                pthread_cond_signal(&(ctx->wcq_cv));
+                pthread_mutex_unlock(&(ctx->wcq_mtx));
+                break;
             case IBV_WC_RDMA_WRITE:
             case IBV_WC_SEND:
+                break;
             default:
                 break;
             }
         }
     }
-#endif
+
     return (NULL);
 }
 
 int send_client_request(client_ctx_t *ctx, int opc) {
-    // Based on the opcode, prepare wqe structures
+    uint64_t rtt_send_nsec = 0;
+    static int count = 0;
+    int rc = 0;
     // Start a separate thread to poll for completion
+    pthread_attr_t tattr;
+    pthread_attr_init(&tattr);
+    pthread_attr_setdetachstate(&tattr, PTHREAD_CREATE_DETACHED);
+    pthread_mutex_init(&(ctx->wcq_mtx), NULL);
+    pthread_cond_init(&(ctx->wcq_cv), NULL);
+    ctx->wcq_fn = &(client_wcq_monitor);
+    rc = pthread_create(&(ctx->wcq_thread), &tattr, ctx->wcq_fn, (void *)ctx);
+    API_STATUS(
+        rc, { return (-1); },
+        "Unable to create WCQ shared send/recv monitor\n");
+
+    // Based on the opcode, prepare wqe structures
     // use IMM: to distinguish between no RDMA vs RDMA follow-up
-    // OPC_SEND_ONLY: no lkey, rkey is needed, data is copied into rdma internal
-    // buf by rdma stack OPC_RDMA_READ/WRITE: mr and key is needed, zcopy using
-    // registered memory Protocol-1: Measure RTT time from client<->server
+    // OPC_SEND_ONLY: lkey, no rkey is needed, zcopy local send, 1-copy remote
+    // recv Protocol-1: Measure RTT time from client<->server
     // ------------------------------------------------
     // time_start()
     // IBV_RECV
@@ -328,8 +350,62 @@ int send_client_request(client_ctx_t *ctx, int opc) {
     //                      based on IMM1, reply with OPC_SEND_ONLY
     // IBV_WC_RECV_RDMA <---IBV_SEND
     // time_end()
-    //
+
+    struct ibv_recv_wr recv_wr = {0}, *recv_bad_wr = NULL;
+    struct ibv_send_wr send_wr = {0}, *send_bad_wr = NULL;
+    struct ibv_sge sge = {0};
+
+    sge.addr = (uint64_t)ctx->recv_client_buf;
+    sge.length = ctx->recv_client_buf_sz;
+    sge.lkey = ctx->recv_buf_mr->lkey;
+    recv_wr.wr_id = count++;
+    recv_wr.next = NULL;
+    recv_wr.sg_list = &sge;
+    recv_wr.num_sge = 1;
+    TIME_DECLARATIONS();
+    TIME_START();
+    rc = ibv_post_recv(ctx->cm_id->qp, &recv_wr, &recv_bad_wr);
+    API_STATUS(
+        rc, { return (-1); }, "Unable to post receive request. Reason: %s\n",
+        strerror(errno));
+
+    send_wr.wr_id = count++;
+    send_wr.next = NULL;
+    sge.addr = (uint64_t)ctx->send_client_buf;
+    sge.length = ctx->send_client_buf_sz;
+    sge.lkey = ctx->send_buf_mr->lkey;
+    send_wr.sg_list = &sge;
+    send_wr.num_sge = 1;
+    send_wr.opcode = IBV_WR_SEND_WITH_IMM;
+    send_wr.send_flags = IBV_SEND_SIGNALED;
+    send_wr.imm_data = opc;
+    // for opc = SEND_ONLY, remote address doesn't matter
+    send_wr.wr.rdma.remote_addr = 0;
+    send_wr.wr.rdma.rkey = 0;
+    rc = ibv_post_send(ctx->cm_id->qp, &send_wr, &send_bad_wr);
+    API_STATUS(
+        rc, { return (-1); }, "Unable to post send request. Reason: %s\n",
+        strerror(errno));
+
+    // sync with WCQ to make sure RECV_RDMA is consumed
+    pthread_mutex_lock(&(ctx->wcq_mtx));
+    while (!ctx->rtt_done) {
+        pthread_cond_wait(&(ctx->wcq_cv), &(ctx->wcq_mtx));
+    }
+
+    ctx->rtt_done = 0; // Reset for next request
+    pthread_mutex_unlock(&(ctx->wcq_mtx));
+
+    TIME_GET_ELAPSED_TIME(rtt_send_nsec);
+    printf("[%s] Round Trip Latency: %ld nsec\n",
+           ((opc == OPC_SEND_ONLY)
+                ? "SEND-RECV"
+                : ((opc == OPC_RDMA_READ) ? "RDMA-READ" : "RDMA_WRITE")),
+           rtt_send_nsec);
+
     // Protocol-2: Measure OPC_RDMA_WRITE RTT from client<->server
+    // OPC_RDMA_READ/WRITE: mr and key is needed, zcopy local send, zcopy local
+    // recv
     // -------------------------------------------------
     // time_start()
     //                      IBV_RECV
@@ -340,7 +416,7 @@ int send_client_request(client_ctx_t *ctx, int opc) {
     //              <-------RDMA_WRITE_IMM
     // IBV_WC_RDMA_WRITE_IMM
     // time_end()
-    return -1;
+    return (0);
 }
 
 int process_client_response(client_ctx_t *ctx, int opc) {

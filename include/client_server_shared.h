@@ -68,13 +68,12 @@
 
 #define TIME_DECLARATIONS()                                                    \
     struct timespec __start;                                                   \
-    struct timespec __end;                                                     \
-    uint64_t __diff = 0;
+    struct timespec __end;
 
 #define TIME_START() clock_gettime(CLOCK_MONOTONIC, &__start);
 
 #define TIME_GET_ELAPSED_TIME(nsec_elapsed)                                    \
-    clock_gettime(CLOCK_MONONTIC, &__end);                                     \
+    clock_gettime(CLOCK_MONOTONIC, &__end);                                    \
     (nsec_elapsed) = (__end.tv_nsec * (NSEC_TO_SEC) + __end.tv_sec) -          \
                      (__start.tv_nsec * (NSEC_TO_SEC) + __start.tv_sec);
 

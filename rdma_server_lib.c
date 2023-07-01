@@ -8,6 +8,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/epoll.h>
+#include <sys/mman.h>
 #include <sys/socket.h>
 #include <sys/types.h>
 #include <time.h>
@@ -135,17 +136,17 @@ server_ctx_t *setup_server(struct sockaddr *addr, uint16_t port_id) {
         "Unable to alloc RDMA Protection Domain. Reason: %s\n",
         strerror(errno));
 
-    ctx->scq = ibv_create_cq(ctx->verbs, 1024, NULL, NULL, 0);
+    ctx->scq = ibv_create_cq(ctx->verbs, MAX_CQE, NULL, NULL, 0);
     API_NULL(
         ctx->scq, { goto free_pd; },
-        "Unable to create RDMA Send CQE of size 128 entries. Reason: %s\n",
-        strerror(errno));
+        "Unable to create RDMA Send CQE of size %d entries. Reason: %s\n",
+        MAX_CQE, strerror(errno));
 
     // Create RDMA QPs for initialized RDMA device rsc
     qp_attr.cap.max_send_sge = 1;
     qp_attr.cap.max_recv_sge = 1;
-    qp_attr.cap.max_send_wr = 1024;
-    qp_attr.cap.max_recv_wr = 1024;
+    qp_attr.cap.max_send_wr = MAX_SEND_WR;
+    qp_attr.cap.max_recv_wr = MAX_RECV_WR;
     qp_attr.qp_context = NULL;
     qp_attr.sq_sig_all = 0;
     qp_attr.srq = NULL;
@@ -195,16 +196,27 @@ free_ctx_fields:
 
 static void *server_wcq_monitor(void *arg) {
     server_ctx_t *ctx = (server_ctx_t *)(arg);
-#if 0
-    ibv_wc_t wc[MAX_CQE] = {0};
+    struct ibv_wc wc[MAX_CQE] = {0};
+    int ncqe = 0;
 
-    while(ctx->is_connected) {
-        rc = ibv_poll_cq(ctx->scq, &wc);
-        for (int i = 0; i < n_wcqe; i++) {
+    while (ctx->is_connected) {
+        ncqe = ibv_poll_cq(ctx->scq, MAX_CQE, &wc[0]);
+        for (int i = 0; i < ncqe; i++) {
             // Check for errors
+            if (wc[i].status != IBV_WC_SUCCESS) {
+                printf("WCQE for WR[%ld] Status: %s\n", wc[i].wr_id,
+                       ibv_wc_status_str(wc[i].status));
+            }
+
             // Based on the opcode decide the action
             switch (wc[i].opcode) {
+            case IBV_WC_RECV:
             case IBV_WC_RECV_RDMA_WITH_IMM:
+                pthread_mutex_lock(&(ctx->wcq_mtx));
+                ctx->recv_done = 1;
+                pthread_cond_signal(&(ctx->wcq_cv));
+                pthread_mutex_unlock(&(ctx->wcq_mtx));
+                break;
             case IBV_WC_RDMA_WRITE:
             case IBV_WC_SEND:
             default:
@@ -212,28 +224,126 @@ static void *server_wcq_monitor(void *arg) {
             }
         }
     }
-#endif
     return (NULL);
 }
 
 int prepare_server_data(server_ctx_t *ctx) {
     // Unconditonally allocate req & response structures
-    // Register memory with RDMA stack, if needed
-    // Save keys and mrs into ctx, if needed
-    // Exchange addresses with client for RDMA_READ/WRITE
-    // IBV_SEND: allocate in buf, no register, no exchg
-    // RDMA_READ/WRITE: allocate in/out buf, register in/out, exchg in/out and
-    // keys
-    return -1;
+    // Register memory with RDMA stack
+    // Save keys and mrs into ctx
+    // Exchange addresses with client using a passive server
+    size_t send_sz = 1048576;
+    size_t recv_sz = 1048576;
+    // Allocate 1MB of buffer space
+    void *send_buf = mmap(NULL, send_sz, PROT_READ | PROT_WRITE,
+                          MAP_PRIVATE | MAP_ANONYMOUS | MAP_HUGETLB, -1, 0);
+    EXT_API_STATUS(
+        send_buf == MAP_FAILED, { return (-1); },
+        "Unable to allocate 1MB send buffer. Reason: %s\n", strerror(errno));
+    void *recv_buf = mmap(NULL, recv_sz, PROT_READ | PROT_WRITE,
+                          MAP_PRIVATE | MAP_ANONYMOUS | MAP_HUGETLB, -1, 0);
+    EXT_API_STATUS(
+        recv_buf == MAP_FAILED,
+        {
+            munmap(send_buf, send_sz);
+            return (-1);
+        },
+        "Unable to allocate 1MB recv buffer. Reason: %s\n", strerror(errno));
+
+    ctx->send_server_buf = send_buf;
+    ctx->send_server_buf_sz = send_sz;
+    ctx->recv_server_buf = recv_buf;
+    ctx->recv_server_buf_sz = recv_sz;
+
+    ctx->send_buf_mr =
+        ibv_reg_mr(ctx->pd, send_buf, send_sz, RDMA_ACCESS_FLAGS);
+    API_NULL(
+        ctx->send_buf_mr,
+        {
+            munmap(send_buf, send_sz);
+            munmap(recv_buf, recv_sz);
+            return (-1);
+        },
+        "Unable to register send buf with RDMA. Reason: %s\n", strerror(errno));
+    ctx->recv_buf_mr =
+        ibv_reg_mr(ctx->pd, recv_buf, recv_sz, RDMA_ACCESS_FLAGS);
+    API_NULL(
+        ctx->recv_buf_mr,
+        {
+            munmap(send_buf, send_sz);
+            munmap(recv_buf, recv_sz);
+            ibv_dereg_mr(ctx->send_buf_mr);
+            return (-1);
+        },
+        "Unable to register recv buf with RDMA. Reason: %s\n", strerror(errno));
+
+    randomize_buf(&(ctx->send_server_buf), ctx->send_server_buf_sz);
+
+    // TODO: Use TCP-IP client/server socket to exchg this
+    return (0);
 }
 
 int send_recv_server(server_ctx_t *ctx) {
-    // Based on the IMM data opc, prepare wqe structures for response
+    static int count = 0;
+    int rc = 0;
     // Start a separate thread to poll for completion
-    // IBV_SEND: no lkey, rkey is needed, data is copied into rdma internal buf
-    // by rdma stack
-    // RDMA_READ/WRITE: mr and key is needed, zcopy using registered memory
+    pthread_attr_t tattr;
+    pthread_attr_init(&tattr);
+    pthread_attr_setdetachstate(&tattr, PTHREAD_CREATE_DETACHED);
+    pthread_mutex_init(&(ctx->wcq_mtx), NULL);
+    pthread_cond_init(&(ctx->wcq_cv), NULL);
+    ctx->wcq_fn = &(server_wcq_monitor);
+    rc = pthread_create(&(ctx->wcq_thread), &tattr, ctx->wcq_fn, (void *)ctx);
+    API_STATUS(
+        rc, { return (-1); },
+        "Unable to create WCQ shared send/recv monitor\n");
+
+    // Based on the IMM data opc, prepare wqe structures for response
+    // IBV_SEND: lkey, no rkey is needed, zcopy local send, 1-copy remote
     // Protocol-1: Measure RTT time from client<->server
+    struct ibv_recv_wr recv_wr = {0}, *recv_bad_wr = NULL;
+    struct ibv_send_wr send_wr = {0}, *send_bad_wr = NULL;
+    struct ibv_sge sge = {0};
+
+    sge.addr = (uint64_t)ctx->recv_server_buf;
+    sge.length = ctx->recv_server_buf_sz;
+    sge.lkey = ctx->recv_buf_mr->lkey;
+    recv_wr.wr_id = count++;
+    recv_wr.next = NULL;
+    recv_wr.sg_list = &sge;
+    recv_wr.num_sge = 1;
+    rc = ibv_post_recv(ctx->cm_id->qp, &recv_wr, &recv_bad_wr);
+    API_STATUS(
+        rc, { return (-1); }, "Unable to post receive wr. Reason: %s\n",
+        strerror(errno));
+
+    // sync with WCQ to make sure RECV_RDMA is consumed
+    pthread_mutex_lock(&(ctx->wcq_mtx));
+    while (!ctx->recv_done) {
+        pthread_cond_wait(&(ctx->wcq_cv), &(ctx->wcq_mtx));
+    }
+
+    ctx->recv_done = 0; // Reset for next request
+    pthread_mutex_unlock(&(ctx->wcq_mtx));
+
+    send_wr.wr_id = count++;
+    send_wr.next = NULL;
+    sge.addr = (uint64_t)ctx->recv_server_buf; // zcopy round about !
+    sge.length = ctx->recv_server_buf_sz;
+    sge.lkey = ctx->recv_buf_mr->lkey;
+    send_wr.sg_list = &sge;
+    send_wr.num_sge = 1;
+    send_wr.opcode = IBV_WR_SEND;
+    // remote address doesn't matter
+    send_wr.wr.rdma.remote_addr = 0;
+    send_wr.wr.rdma.rkey = 0;
+    rc = ibv_post_send(ctx->cm_id->qp, &send_wr, &send_bad_wr);
+    API_STATUS(
+        rc, { return (-1); }, "Unable to post send request. Reason: %s\n",
+        strerror(errno));
+
+    // Ignore the processing of send completion as client synchronizes for it!
+
     // Protocol-2: Measure RDMA_WRITE RTT from client<->server
-    return -1;
+    return (0);
 }

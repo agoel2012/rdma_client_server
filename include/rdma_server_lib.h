@@ -8,6 +8,10 @@
 #include <stdio.h>
 #include <sys/types.h>
 
+#define MAX_SEND_WR 128
+#define MAX_RECV_WR 128
+#define MAX_CQE 128
+
 /**
  * @struct thread_fn_t
  * @brief Server Thread Function Type
@@ -42,12 +46,13 @@ typedef struct server_ctx_s {
     pthread_cond_t wcq_cv;
 
     /* Memory to be registered and used by client-server communication */
-    void *send_client_buf;      //< RDMA compliant send buf
-    size_t send_client_buf_sz;  //< size of send buf
-    void *recv_client_buf;      //< RDMA complaint recv for send buf
-    size_t recv_client_buf_sz;  //< size of recv for send buf
+    void *send_server_buf;      //< RDMA compliant send buf
+    size_t send_server_buf_sz;  //< size of send buf
+    void *recv_server_buf;      //< RDMA complaint recv for send buf
+    size_t recv_server_buf_sz;  //< size of recv for send buf
     struct ibv_mr *send_buf_mr; //< RDMA compliant send buf mr
     struct ibv_mr *recv_buf_mr; //< RDMA compliant recv buf mr
+    bool recv_done;
 } server_ctx_t;
 
 /**
