@@ -15,11 +15,25 @@
 static int start_client(const client_info_t *sv) {
 
     // TODO: Debug the struct to ip conversion bug !
-
     client_ctx_t *ctx = setup_client(sv->my_addr, sv->peer_addr);
     API_NULL(
         ctx, { return -1; },
         "Unable to setup client control plane and connect to server\n");
+
+    // Prepare request/response structures
+    API_STATUS(
+        prepare_client_data(ctx, sv->opcode), { return -1; },
+        "Unable to prepare the client request data\n");
+
+    // Send request based the opcode
+    API_STATUS(
+        send_client_request(ctx, sv->opcode), { return -1; },
+        "Unable to send request to server\n");
+
+    // Recv response based on the opcode
+    API_STATUS(
+        process_client_response(ctx, sv->opcode), { return -1; },
+        "Unable to recv response from server\n");
     return 0;
 }
 

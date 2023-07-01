@@ -207,11 +207,8 @@ disconnect_free_cq:
     pthread_attr_destroy(&tattr);
 
 free_cq:
-    if (ctx->scq) {
+    if (ctx->scq || ctx->rcq) {
         ibv_destroy_cq(ctx->scq);
-    }
-    if (ctx->rcq) {
-        ibv_destroy_cq(ctx->rcq);
     }
 free_pd:
     ibv_dealloc_pd(ctx->pd);
@@ -224,21 +221,73 @@ free_ctx_fields:
     return (NULL);
 }
 
-int process_client(void **buf, size_t nbytes) {
-    size_t i = 0;
-    // Print Rx on client after recv
-    // Randomize Tx on client before send
-    srand(time(NULL));
-    printf("\n============[RX %zu bytes START]===========\n", nbytes);
-    for (i = 0; i < nbytes; i++) {
-        if (i % 8 == 0) {
-            printf("\n");
+int prepare_client_data(client_ctx_t *ctx, int opc) {
+    // Based on the opcode, allocate req & response structures
+    // Register memory with RDMA stack, if needed
+    // Save keys and mrs into ctx, if needed
+    // Exchange addresses with server for RDMA_READ/WRITE
+    // IBV_SEND: allocate in buf, no register, no exchg
+    // RDMA_READ/WRITE: allocate in/out buf, register in/out, exchg in/out and
+    // keys
+    return -1;
+}
+
+static void *client_wcq_monitor(void *arg) {
+    client_ctx_t *ctx = (client_ctx_t *)(arg);
+#if 0
+    ibv_wc_t wc[MAX_CQE] = {0};
+
+    while(ctx->is_connected) {
+        rc = ibv_poll_cq(ctx->scq, &wc);
+        for (int i = 0; i < n_wcqe; i++) {
+            // Check for errors
+            // Based on the opcode decide the action
+            switch (wc[i].opcode) {
+            case IBV_WC_RECV_RDMA_WITH_IMM:
+            case IBV_WC_RDMA_WRITE:
+            case IBV_WC_SEND:
+            default:
+                break;
+            }
         }
-
-        printf("%02x \t", *(uint8_t *)(*buf + i));
-        *(uint8_t *)(*buf + i) = (rand() % 256);
     }
-    printf("\n============[RX %zu bytes END]=============\n", nbytes);
+#endif
+    return (NULL);
+}
 
-    return (0);
+int send_client_request(client_ctx_t *ctx, int opc) {
+    // Based on the opcode, prepare wqe structures
+    // Start a separate thread to poll for completion
+    // use IMM: to distinguish between no RDMA vs RDMA follow-up
+    // IBV_SEND: no lkey, rkey is needed, data is copied into rdma internal buf
+    // by rdma stack
+    // RDMA_READ/WRITE: mr and key is needed, zcopy using registered memory
+    // Protocol-1: Measure RTT time from client<->server
+    // ------------------------------------------------
+    // time_start()
+    // IBV_RECV
+    //                      IBV_RECV
+    // IBV_SEND --------->  IBV_WC_RECV_RDMA_WITH_IMM
+    //                      based on IMM1, reply with IBV_SEND
+    // IBV_WC_RECV_RDMA <---IBV_SEND
+    // time_end()
+    //
+    // Protocol-2: Measure RDMA_WRITE RTT from client<->server
+    // -------------------------------------------------
+    // time_start()
+    //                      IBV_RECV
+    // IBV_SEND --------->  IBV_WC_RECV_RDMA_WITH_IMM
+    //                      based on IMM2, reply with RDMA_WRITE IMM notify
+    // RDMA_WRITE_IMM -------->
+    //                      IBV_WC_RDMA_WRITE_IMM
+    //              <-------RDMA_WRITE_IMM
+    // IBV_WC_RDMA_WRITE_IMM
+    // time_end()
+    return -1;
+}
+
+int process_client_response(client_ctx_t *ctx, int opc) {
+    // Based on the opcode, inspect the response and compare against request
+    // if it matches, operation was successful
+    return -1;
 }

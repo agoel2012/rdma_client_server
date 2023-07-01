@@ -43,6 +43,7 @@ typedef struct client_info_s {
     struct sockaddr *peer_addr;
     uint16_t rank;
     int iterations;
+    int opcode;
 } __attribute__((packed)) client_info_t;
 
 /**
@@ -139,6 +140,36 @@ static inline client_info_t *parse_caddress_info(char *sip, char *__dip,
            sip, iterations, obj->rank, dip, port);
     free(dip);
     return obj;
+}
+
+static inline void print_buf(void *buf, size_t nbytes) {
+    size_t i = 0;
+    // Print Rx on client after recv
+    printf("\n============[%zu bytes START]===========\n", nbytes);
+    for (i = 0; i < nbytes; i++) {
+        if (i % 8 == 0) {
+            printf("\n");
+        }
+
+        printf("%02x \t", *(uint8_t *)(buf + i));
+    }
+
+    printf("\n============[RX %zu bytes END]=============\n", nbytes);
+}
+
+static inline int randomize_buf(void **buf, size_t nbytes) {
+    size_t i = 0;
+    // Randomize Tx on client before send
+    srand(time(NULL));
+    for (i = 0; i < nbytes; i++) {
+        if (i % 8 == 0) {
+            printf("\n");
+        }
+
+        *(uint8_t *)(*buf + i) = (rand() % 256);
+    }
+
+    return (0);
 }
 
 #endif /*! CLIENT_SERVER_SHARED_H */

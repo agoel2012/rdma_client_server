@@ -34,7 +34,23 @@ typedef struct client_ctx_s {
     thread_fn_t evt_fn;                 //< RDMA Event Thread Function Callback
     pthread_mutex_t evt_mtx;            //< RDMA Event Thread Sync Mtx
     pthread_cond_t evt_cv;              //< RDMA Event Thread Sync Cv
-    bool is_connected;
+    bool is_connected;                  //< RDMA Client-Server Connected
+
+    /* Poll Monitor Specific attributes */
+    pthread_t wcq_thread;
+    thread_fn_t wcq_fn;
+    pthread_mutex_t wcq_mtx;
+    pthread_cond_t wcq_cv;
+
+    /* Memory to be registered and used by client-server communication */
+    void *send_client_buf;      //< RDMA compliant send buf
+    size_t send_client_buf_sz;  //< size of send buf
+    void *recv_client_buf;      //< RDMA complaint recv for send buf
+    size_t recv_client_buf_sz;  //< size of recv for send buf
+    struct ibv_mr *send_buf_mr; //< RDMA compliant send buf mr
+    struct ibv_mr *recv_buf_mr; //< RDMA compliant recv buf mr
+    int lkey;                   //< RDMA compliant local pkey
+    int rkey;                   //< RDMA complaint remote pkey
 } client_ctx_t;
 
 /**
@@ -64,15 +80,18 @@ client_ctx_t *setup_client(struct sockaddr *src_addr,
                            struct sockaddr *dst_addr);
 
 /**
- * @brief Given a user-defined msgbuf and nbytes, process the data
- * and produce outbut msgbuf (in-place) of the same size
+ * @brief Process client response received
  */
-int process_client(void **buf, size_t nbytes);
+int process_client_response(client_ctx_t *ctx, int opc);
 
 /**
- * @brief Given a previously allocated client context info,
- * destroy the client control plane
+ * @brief Send client request to server
  */
-int destroy_client(client_ctx_t *ctx);
+int send_client_request(client_ctx_t *ctx, int opc);
+
+/**
+ * @brief Prepare client request & response to be send/recv
+ */
+int prepare_client_data(client_ctx_t *ctx, int opc);
 
 #endif /*! RDMA_CLIENT_LIB_H */

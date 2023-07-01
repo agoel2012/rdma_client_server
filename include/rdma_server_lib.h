@@ -34,6 +34,22 @@ typedef struct server_ctx_s {
     pthread_mutex_t evt_mtx;            //< RDMA Event Thread Sync Mtx
     pthread_cond_t evt_cv;              //< RDMA Event Thread Sync Cv
     bool is_connected;
+
+    /* Poll Monitor Specific attributes */
+    pthread_t wcq_thread;
+    thread_fn_t wcq_fn;
+    pthread_mutex_t wcq_mtx;
+    pthread_cond_t wcq_cv;
+
+    /* Memory to be registered and used by client-server communication */
+    void *send_client_buf;      //< RDMA compliant send buf
+    size_t send_client_buf_sz;  //< size of send buf
+    void *recv_client_buf;      //< RDMA complaint recv for send buf
+    size_t recv_client_buf_sz;  //< size of recv for send buf
+    struct ibv_mr *send_buf_mr; //< RDMA compliant send buf mr
+    struct ibv_mr *recv_buf_mr; //< RDMA compliant recv buf mr
+    int lkey;                   //< RDMA compliant local pkey
+    int rkey;                   //< RDMA complaint remote pkey
 } server_ctx_t;
 
 /**
@@ -62,15 +78,14 @@ typedef struct server_ctx_s {
 server_ctx_t *setup_server(struct sockaddr *addr, uint16_t port_id);
 
 /**
- * @brief Given a user-defined msgbuf and nbytes, process the data
- * and produce outbut msgbuf (in-place) of the same size
+ * @brief Prepare the input/output req/response data for server
  */
-int process_server(void **buf, size_t nbytes);
+int prepare_server_data(server_ctx_t *ctx);
 
 /**
- * @brief Given a previously allocated server context info,
- * destroy the server control plane
+ * @brief Recv the request, based on the immediate opcode, send response
+ * to client
  */
-int destroy_server(server_ctx_t *ctx);
+int send_recv_server(server_ctx_t *ctx);
 
 #endif /*! RDMA_SERVER_LIB_H */
