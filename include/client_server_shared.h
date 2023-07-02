@@ -242,4 +242,24 @@ static inline int randomize_buf(void **buf, size_t nbytes) {
     return (0);
 }
 
+__attribute__((unused)) static const char *
+wc_opcode_str(enum ibv_wc_opcode opc) {
+    switch (opc) {
+    case IBV_WC_RECV:
+        return "WC_RECV";
+    case IBV_WC_RECV_RDMA_WITH_IMM:
+        return "WC_RECV_RDMA_WITH_IMM";
+    case IBV_WC_SEND:
+        return "WC_SEND";
+    case IBV_WC_RDMA_WRITE:
+        return "WC_RDMA_WRITE";
+    case IBV_WC_RDMA_READ:
+        return "WC_RDMA_READ";
+    default:
+        return "UNKNOWN WCQE OPCODE";
+    }
+
+    return "";
+}
+
 #endif /*! CLIENT_SERVER_SHARED_H */

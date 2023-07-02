@@ -8,9 +8,9 @@
 #include <stdio.h>
 #include <sys/types.h>
 
-#define MAX_SEND_WR 128
-#define MAX_RECV_WR 128
-#define MAX_CQE 128
+#define MAX_SEND_WR 1024
+#define MAX_RECV_WR 512
+#define MAX_CQE 512
 
 /**
  * @struct thread_fn_t
@@ -53,8 +53,8 @@ typedef struct client_ctx_s {
     size_t recv_client_buf_sz;  //< size of recv for send buf
     struct ibv_mr *send_buf_mr; //< RDMA compliant send buf mr
     struct ibv_mr *recv_buf_mr; //< RDMA compliant recv buf mr
-    bool rtt_done; //< Condition to be set if a single send/recv round-trip is
-                   // done on client
+    bool rtt_done[MAX_SEND_WR]; //< Condition to be set if a single send/recv
+                                // round-trip is done on client
 } client_ctx_t;
 
 /**

@@ -8,9 +8,9 @@
 #include <stdio.h>
 #include <sys/types.h>
 
-#define MAX_SEND_WR 128
-#define MAX_RECV_WR 128
-#define MAX_CQE 128
+#define MAX_SEND_WR 1024
+#define MAX_RECV_WR 512
+#define MAX_CQE 512
 
 /**
  * @struct thread_fn_t
@@ -52,7 +52,7 @@ typedef struct server_ctx_s {
     size_t recv_server_buf_sz;  //< size of recv for send buf
     struct ibv_mr *send_buf_mr; //< RDMA compliant send buf mr
     struct ibv_mr *recv_buf_mr; //< RDMA compliant recv buf mr
-    int recv_opc;               //< RDMA received immediate opcode from client
+    int recv_opc[MAX_SEND_WR];  //< RDMA received immediate opcode from client
     size_t recv_sz;             //< RDMA WCQE byte len
 } server_ctx_t;
 
@@ -61,6 +61,17 @@ typedef struct server_ctx_s {
  * control plane
  */
 server_ctx_t *setup_server(struct sockaddr *addr, uint16_t port_id);
+
+/**
+ * @brief Given a server context, setup its connection to client
+ */
+int connect_server(server_ctx_t *ctx);
+
+/**
+ * @brief Given a previously connected server context, teardown its connection
+ * to a client
+ */
+int disconnect_server(server_ctx_t *ctx);
 
 /**
  * @brief Prepare the input/output req/response data for server

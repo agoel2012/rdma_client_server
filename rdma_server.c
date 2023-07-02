@@ -19,6 +19,10 @@ int start_server(server_info_t *sv) {
     API_NULL(
         ctx, { return (-1); }, "Server Setup Failed\n");
 
+    // Connect server to a client
+    API_STATUS(
+        connect_server(ctx), { return (-1); }, "Server Connect Failed\n");
+
     // Prepare request/response structures
     API_STATUS(
         prepare_server_data(ctx), { return -1; },

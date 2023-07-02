@@ -46,6 +46,7 @@ static void *server_event_monitor(void *arg) {
             pthread_mutex_lock(&(ctx->evt_mtx));
             ctx->is_connected = false;
             pthread_cond_signal(&(ctx->evt_cv));
+            pthread_cond_signal(&(ctx->wcq_cv));
             pthread_mutex_unlock(&(ctx->evt_mtx));
         } break;
         default:
@@ -64,9 +65,6 @@ server_ctx_t *setup_server(struct sockaddr *addr, uint16_t port_id) {
     pthread_attr_t tattr;
     int ndevices = 0;
     struct ibv_context **rdma_verbs = NULL;
-    struct ibv_qp_init_attr qp_attr = {};
-    memset(&qp_attr, 0, sizeof(struct ibv_qp_init_attr));
-
     // Check if any RDMA devices exist
     rdma_verbs = rdma_get_devices(&ndevices);
     API_NULL(
@@ -117,6 +115,23 @@ server_ctx_t *setup_server(struct sockaddr *addr, uint16_t port_id) {
         rc, { goto free_cm_id; },
         "Unable to create RDMA event channel monitor\n");
 
+    pthread_attr_destroy(&tattr);
+    return (ctx);
+
+free_cm_id:
+    rdma_destroy_id(ctx->cm_id);
+free_channel:
+    rdma_destroy_event_channel(ctx->channel);
+free_ctx_fields:
+    free(ctx);
+    return (NULL);
+}
+
+int connect_server(server_ctx_t *ctx) {
+    int rc = 0;
+    struct ibv_qp_init_attr qp_attr = {};
+    memset(&qp_attr, 0, sizeof(struct ibv_qp_init_attr));
+
     // Accept incoming valid client connections
     pthread_mutex_lock(&ctx->evt_mtx);
     while (!ctx->listen_id) {
@@ -132,7 +147,7 @@ server_ctx_t *setup_server(struct sockaddr *addr, uint16_t port_id) {
 
     ctx->pd = ibv_alloc_pd(ctx->verbs);
     API_NULL(
-        ctx->pd, { goto close_device; },
+        ctx->pd, { return (-1); },
         "Unable to alloc RDMA Protection Domain. Reason: %s\n",
         strerror(errno));
 
@@ -171,46 +186,40 @@ server_ctx_t *setup_server(struct sockaddr *addr, uint16_t port_id) {
 
     pthread_mutex_unlock(&ctx->evt_mtx);
 
-    pthread_attr_destroy(&tattr);
-    return (ctx);
+    return (0);
 
 disconnect_free_cq:
     pthread_mutex_unlock(&ctx->evt_mtx);
     rdma_disconnect(ctx->listen_id);
-    pthread_attr_destroy(&tattr);
     if (ctx->scq || ctx->rcq) {
         ibv_destroy_cq(ctx->scq);
     }
 free_pd:
     ibv_dealloc_pd(ctx->pd);
-close_device:
-    ibv_close_device(ctx->verbs);
-free_cm_id:
-    rdma_destroy_id(ctx->cm_id);
-free_channel:
-    rdma_destroy_event_channel(ctx->channel);
-free_ctx_fields:
-    free(ctx);
-    return (NULL);
+    return (-1);
 }
 
-static const char *wc_opcode_str(enum ibv_wc_opcode opc) {
-    switch (opc) {
-    case IBV_WC_RECV:
-        return "WC_RECV";
-    case IBV_WC_RECV_RDMA_WITH_IMM:
-        return "WC_RECV_RDMA_WITH_IMM";
-    case IBV_WC_SEND:
-        return "WC_SEND";
-    case IBV_WC_RDMA_WRITE:
-        return "WC_RDMA_WRITE";
-    case IBV_WC_RDMA_READ:
-        return "WC_RDMA_READ";
-    default:
-        return "UNKNOWN WCQE OPCODE";
+int disconnect_server(server_ctx_t *ctx) {
+
+    printf("Tearing down RDMAServer\n");
+    pthread_mutex_lock(&ctx->evt_mtx);
+    while (ctx->is_connected) {
+        pthread_cond_wait(&ctx->evt_cv, &ctx->evt_mtx);
     }
 
-    return "";
+    // Release old resources after disconnect
+    rdma_destroy_qp(ctx->listen_id);
+    rdma_disconnect(ctx->listen_id);
+    if (ctx->scq || ctx->rcq) {
+        ibv_destroy_cq(ctx->scq);
+    }
+
+    ibv_dealloc_pd(ctx->pd);
+    ctx->listen_id = 0;
+    ctx->pd = NULL;
+    ctx->scq = ctx->rcq = NULL;
+    pthread_mutex_unlock(&ctx->evt_mtx);
+    return 0;
 }
 
 static void *server_wcq_monitor(void *arg) {
@@ -239,9 +248,9 @@ static void *server_wcq_monitor(void *arg) {
                 // This only works because all messages are of the same size and
                 // opcode, else we would need to organize this info by wr_id and
                 // use that to correlate the dispatcher
-                ctx->recv_opc = (wc[i].imm_data);
+                ctx->recv_opc[wc[i].wr_id] = (wc[i].imm_data);
                 ctx->recv_sz = (wc[i].byte_len);
-                pthread_cond_signal(&(ctx->wcq_cv));
+                pthread_cond_broadcast(&(ctx->wcq_cv));
                 pthread_mutex_unlock(&(ctx->wcq_mtx));
                 break;
             case IBV_WC_RDMA_WRITE:
@@ -336,7 +345,7 @@ int send_recv_server(server_ctx_t *ctx) {
     sge.addr = (uint64_t)ctx->recv_server_buf;
     sge.length = ctx->recv_server_buf_sz;
     sge.lkey = ctx->recv_buf_mr->lkey;
-    recv_wr.wr_id = count++;
+    recv_wr.wr_id = (count % MAX_SEND_WR);
     recv_wr.next = NULL;
     recv_wr.sg_list = &sge;
     recv_wr.num_sge = 1;
@@ -347,16 +356,22 @@ int send_recv_server(server_ctx_t *ctx) {
 
     // sync with WCQ to make sure RECV_RDMA is consumed
     pthread_mutex_lock(&(ctx->wcq_mtx));
-    while (ctx->recv_opc == OPC_INVALID) {
+    while (ctx->recv_opc[recv_wr.wr_id] == OPC_INVALID && ctx->is_connected) {
         pthread_cond_wait(&(ctx->wcq_cv), &(ctx->wcq_mtx));
     }
 
-    opc = ctx->recv_opc;
-    ctx->recv_opc = OPC_INVALID; // Reset for next request
+    opc = ctx->recv_opc[recv_wr.wr_id];
+    ctx->recv_opc[recv_wr.wr_id] = OPC_INVALID; // Reset for next request
     pthread_mutex_unlock(&(ctx->wcq_mtx));
 
+    if (!ctx->is_connected) {
+        disconnect_server(ctx);
+        return (0);
+    }
+
     if (opc == OPC_SEND_ONLY) {
-        send_wr.wr_id = count++;
+        send_wr.wr_id = (count % MAX_SEND_WR);
+        count++;
         send_wr.next = NULL;
         sge.addr = (uint64_t)ctx->recv_server_buf; // zcopy round about !
         sge.length = ctx->recv_sz;
@@ -364,6 +379,7 @@ int send_recv_server(server_ctx_t *ctx) {
         send_wr.sg_list = &sge;
         send_wr.num_sge = 1;
         send_wr.opcode = IBV_WR_SEND;
+        send_wr.send_flags = IBV_SEND_SIGNALED;
         // remote address doesn't matter
         send_wr.wr.rdma.remote_addr = 0;
         send_wr.wr.rdma.rkey = 0;

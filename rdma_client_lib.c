@@ -235,6 +235,11 @@ static void *client_wcq_monitor(void *arg) {
             if (wc[i].status != IBV_WC_SUCCESS) {
                 printf("WCQE for WR[%ld] Status: %s\n", wc[i].wr_id,
                        ibv_wc_status_str(wc[i].status));
+            } else {
+#if 0
+                printf("WCQE for WR[%ld] Opcode: %s\n", wc[i].wr_id,
+                       wc_opcode_str(wc[i].opcode));
+#endif
             }
 
             // Based on the opcode decide the action
@@ -242,7 +247,7 @@ static void *client_wcq_monitor(void *arg) {
             case IBV_WC_RECV:
             case IBV_WC_RECV_RDMA_WITH_IMM:
                 pthread_mutex_lock(&(ctx->wcq_mtx));
-                ctx->rtt_done = 1;
+                ctx->rtt_done[wc[i].wr_id] = 1;
                 pthread_cond_signal(&(ctx->wcq_cv));
                 pthread_mutex_unlock(&(ctx->wcq_mtx));
                 break;
@@ -364,7 +369,7 @@ int send_client_request(client_ctx_t *ctx, int opc, size_t msg_sz) {
     sge.length = (msg_sz < ctx->recv_client_buf_sz) ? (msg_sz)
                                                     : (ctx->recv_client_buf_sz);
     sge.lkey = ctx->recv_buf_mr->lkey;
-    recv_wr.wr_id = count++;
+    recv_wr.wr_id = (count % MAX_SEND_WR);
     recv_wr.next = NULL;
     recv_wr.sg_list = &sge;
     recv_wr.num_sge = 1;
@@ -375,7 +380,8 @@ int send_client_request(client_ctx_t *ctx, int opc, size_t msg_sz) {
         rc, { return (-1); }, "Unable to post receive request. Reason: %s\n",
         strerror(errno));
 
-    send_wr.wr_id = count++;
+    send_wr.wr_id = (count % MAX_SEND_WR);
+    count++;
     send_wr.next = NULL;
     sge.addr = (uint64_t)ctx->send_client_buf;
     sge.length = (msg_sz < ctx->send_client_buf_sz) ? (msg_sz)
@@ -396,11 +402,11 @@ int send_client_request(client_ctx_t *ctx, int opc, size_t msg_sz) {
 
     // sync with WCQ to make sure RECV_RDMA is consumed
     pthread_mutex_lock(&(ctx->wcq_mtx));
-    while (!ctx->rtt_done) {
+    while (!ctx->rtt_done[recv_wr.wr_id]) {
         pthread_cond_wait(&(ctx->wcq_cv), &(ctx->wcq_mtx));
     }
 
-    ctx->rtt_done = 0; // Reset for next request
+    ctx->rtt_done[recv_wr.wr_id] = 0; // Reset for next request
     pthread_mutex_unlock(&(ctx->wcq_mtx));
 
     TIME_GET_ELAPSED_TIME(rtt_send_nsec);
