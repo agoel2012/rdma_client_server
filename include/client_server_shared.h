@@ -56,9 +56,16 @@
  * @name OPC_RDMA_READ/OPC_SEND_ONLY/OPC_RDMA_WRITE
  * @brief shared opcode(s) for client/server datapath
  */
+#define OPC_INVALID 0x0
 #define OPC_RDMA_READ 0x01
 #define OPC_SEND_ONLY 0x02
 #define OPC_RDMA_WRITE 0x04
+
+/**
+ * @name MAX_MR_SZ
+ * @brief Maximum size of the memory region for RDMA send/read/write
+ */
+#define MAX_MR_SZ (1024 * 1024)
 
 /**
  * @name TIME_DECLARATIONS/TIME_START/TIME_GET_ELAPSED_TIME
@@ -97,6 +104,7 @@ typedef struct client_info_s {
     uint16_t rank;
     int iterations;
     int opcode;
+    size_t msg_sz;
 } __attribute__((packed)) client_info_t;
 
 /**
@@ -146,7 +154,8 @@ static inline server_info_t *parse_saddress_info(char *args) {
 }
 
 static inline client_info_t *parse_caddress_info(char *sip, char *__dip,
-                                                 char *iterations) {
+                                                 char *opcode, char *iterations,
+                                                 char *msg_sz) {
     client_info_t *obj = (client_info_t *)calloc(1, sizeof(client_info_t));
     struct sockaddr_in server_addr_in = {};
     struct sockaddr_in client_addr_in = {};
@@ -180,17 +189,29 @@ static inline client_info_t *parse_caddress_info(char *sip, char *__dip,
     inet_pton(AF_INET, sip, (void *)&(client_addr_in.sin_addr));
     memcpy(obj->my_addr, (struct sockaddr *)(&client_addr_in),
            sizeof(struct sockaddr));
-
+#if 0
     printf("PEER: %s\n", SKADDR_TO_IP(obj->peer_addr));
     printf("MY: %s\n", SKADDR_TO_IP(obj->my_addr));
-
+#endif
     // Extract rank from IP octet
     obj->rank = (uint16_t)ntohl(inet_addr(sip));
 
     // Store the rank and iterations into obj structure
     obj->iterations = (int)atoi(iterations);
-    printf("Client IP: %s, Iterations: %s, Rank: %u => Target Server: %s:%s\n",
-           sip, iterations, obj->rank, dip, port);
+    if (strncmp(opcode, "SEND", strlen(opcode)) == 0) {
+        obj->opcode = OPC_SEND_ONLY;
+    } else if (strncmp(opcode, "RDMA_WRITE", strlen(opcode)) == 0) {
+        obj->opcode = OPC_RDMA_WRITE;
+    } else if (strncmp(opcode, "RDMA_READ", strlen(opcode)) == 0) {
+        obj->opcode = OPC_RDMA_READ;
+    } else {
+        obj->opcode = OPC_INVALID;
+    }
+
+    obj->msg_sz = (size_t)atoi(msg_sz);
+    printf("Client IP: %s, Iterations: %s, Rank: %u, %s Msg Size: %zu bytes => "
+           "Target Server: %s:%s\n",
+           sip, iterations, obj->rank, opcode, obj->msg_sz, dip, port);
     free(dip);
     return obj;
 }

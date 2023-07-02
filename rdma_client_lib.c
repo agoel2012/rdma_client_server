@@ -222,9 +222,46 @@ free_ctx_fields:
     return (NULL);
 }
 
+static void *client_wcq_monitor(void *arg) {
+    client_ctx_t *ctx = (client_ctx_t *)(arg);
+
+    int ncqe = 0;
+    struct ibv_wc wc[MAX_CQE] = {0};
+
+    while (ctx->is_connected) {
+        ncqe = ibv_poll_cq(ctx->scq, MAX_CQE, &wc[0]);
+        for (int i = 0; i < ncqe; i++) {
+            // Check for errors
+            if (wc[i].status != IBV_WC_SUCCESS) {
+                printf("WCQE for WR[%ld] Status: %s\n", wc[i].wr_id,
+                       ibv_wc_status_str(wc[i].status));
+            }
+
+            // Based on the opcode decide the action
+            switch (wc[i].opcode) {
+            case IBV_WC_RECV:
+            case IBV_WC_RECV_RDMA_WITH_IMM:
+                pthread_mutex_lock(&(ctx->wcq_mtx));
+                ctx->rtt_done = 1;
+                pthread_cond_signal(&(ctx->wcq_cv));
+                pthread_mutex_unlock(&(ctx->wcq_mtx));
+                break;
+            case IBV_WC_RDMA_WRITE:
+            case IBV_WC_SEND:
+                break;
+            default:
+                break;
+            }
+        }
+    }
+
+    return (NULL);
+}
+
 int prepare_client_data(client_ctx_t *ctx, int opc) {
-    size_t send_sz = 1048576;
-    size_t recv_sz = 1048576;
+    size_t send_sz = (MAX_MR_SZ);
+    size_t recv_sz = (MAX_MR_SZ);
+    int rc = 0;
     // Based on the opcode, allocate req & response structures
     // Register memory with RDMA stack, if needed
     // Save keys and mrs into ctx, if needed
@@ -277,55 +314,6 @@ int prepare_client_data(client_ctx_t *ctx, int opc) {
         "Unable to register recv buf with RDMA. Reason: %s\n", strerror(errno));
 
     randomize_buf(&(ctx->send_client_buf), ctx->send_client_buf_sz);
-
-    // TODO: Use TCP-IP client/server socket to exchg this
-    if (opc == OPC_RDMA_READ || opc == OPC_RDMA_WRITE) {
-        return (-1);
-    }
-
-    return 0;
-}
-
-static void *client_wcq_monitor(void *arg) {
-    client_ctx_t *ctx = (client_ctx_t *)(arg);
-
-    int ncqe = 0;
-    struct ibv_wc wc[MAX_CQE] = {0};
-
-    while (ctx->is_connected) {
-        ncqe = ibv_poll_cq(ctx->scq, MAX_CQE, &wc[0]);
-        for (int i = 0; i < ncqe; i++) {
-            // Check for errors
-            if (wc[i].status != IBV_WC_SUCCESS) {
-                printf("WCQE for WR[%ld] Status: %s\n", wc[i].wr_id,
-                       ibv_wc_status_str(wc[i].status));
-            }
-
-            // Based on the opcode decide the action
-            switch (wc[i].opcode) {
-            case IBV_WC_RECV:
-            case IBV_WC_RECV_RDMA_WITH_IMM:
-                pthread_mutex_lock(&(ctx->wcq_mtx));
-                ctx->rtt_done = 1;
-                pthread_cond_signal(&(ctx->wcq_cv));
-                pthread_mutex_unlock(&(ctx->wcq_mtx));
-                break;
-            case IBV_WC_RDMA_WRITE:
-            case IBV_WC_SEND:
-                break;
-            default:
-                break;
-            }
-        }
-    }
-
-    return (NULL);
-}
-
-int send_client_request(client_ctx_t *ctx, int opc) {
-    uint64_t rtt_send_nsec = 0;
-    static int count = 0;
-    int rc = 0;
     // Start a separate thread to poll for completion
     pthread_attr_t tattr;
     pthread_attr_init(&tattr);
@@ -338,6 +326,18 @@ int send_client_request(client_ctx_t *ctx, int opc) {
         rc, { return (-1); },
         "Unable to create WCQ shared send/recv monitor\n");
 
+    // TODO: Use TCP-IP client/server socket to exchg this
+    if (opc == OPC_RDMA_READ || opc == OPC_RDMA_WRITE) {
+        return (-1);
+    }
+
+    return 0;
+}
+
+int send_client_request(client_ctx_t *ctx, int opc, size_t msg_sz) {
+    uint64_t rtt_send_nsec = 0;
+    static int count = 0;
+    int rc = 0;
     // Based on the opcode, prepare wqe structures
     // use IMM: to distinguish between no RDMA vs RDMA follow-up
     // OPC_SEND_ONLY: lkey, no rkey is needed, zcopy local send, 1-copy remote
@@ -350,13 +350,19 @@ int send_client_request(client_ctx_t *ctx, int opc) {
     //                      based on IMM1, reply with OPC_SEND_ONLY
     // IBV_WC_RECV_RDMA <---IBV_SEND
     // time_end()
+    //
+    if (opc != OPC_SEND_ONLY) {
+        printf("Unsupported opcode\n");
+        return (-1);
+    }
 
     struct ibv_recv_wr recv_wr = {0}, *recv_bad_wr = NULL;
     struct ibv_send_wr send_wr = {0}, *send_bad_wr = NULL;
     struct ibv_sge sge = {0};
 
     sge.addr = (uint64_t)ctx->recv_client_buf;
-    sge.length = ctx->recv_client_buf_sz;
+    sge.length = (msg_sz < ctx->recv_client_buf_sz) ? (msg_sz)
+                                                    : (ctx->recv_client_buf_sz);
     sge.lkey = ctx->recv_buf_mr->lkey;
     recv_wr.wr_id = count++;
     recv_wr.next = NULL;
@@ -372,7 +378,8 @@ int send_client_request(client_ctx_t *ctx, int opc) {
     send_wr.wr_id = count++;
     send_wr.next = NULL;
     sge.addr = (uint64_t)ctx->send_client_buf;
-    sge.length = ctx->send_client_buf_sz;
+    sge.length = (msg_sz < ctx->send_client_buf_sz) ? (msg_sz)
+                                                    : (ctx->send_client_buf_sz);
     sge.lkey = ctx->send_buf_mr->lkey;
     send_wr.sg_list = &sge;
     send_wr.num_sge = 1;
@@ -397,11 +404,11 @@ int send_client_request(client_ctx_t *ctx, int opc) {
     pthread_mutex_unlock(&(ctx->wcq_mtx));
 
     TIME_GET_ELAPSED_TIME(rtt_send_nsec);
-    printf("[%s] Round Trip Latency: %ld nsec\n",
+    printf("[%s] Round Trip Latency: %ld nsec, Size: %zu bytes\n",
            ((opc == OPC_SEND_ONLY)
                 ? "SEND-RECV"
                 : ((opc == OPC_RDMA_READ) ? "RDMA-READ" : "RDMA_WRITE")),
-           rtt_send_nsec);
+           rtt_send_nsec, msg_sz);
 
     // Protocol-2: Measure OPC_RDMA_WRITE RTT from client<->server
     // OPC_RDMA_READ/WRITE: mr and key is needed, zcopy local send, zcopy local
@@ -419,9 +426,8 @@ int send_client_request(client_ctx_t *ctx, int opc) {
     return (0);
 }
 
-int process_client_response(client_ctx_t *ctx, int opc) {
+int process_client_response(client_ctx_t *ctx, int opc, size_t msg_sz) {
     // Based on the opcode, inspect the response and compare against request
     // if it matches, operation was successful
-    return (memcmp(ctx->send_client_buf, ctx->recv_client_buf,
-                   ctx->send_client_buf_sz));
+    return (memcmp(ctx->send_client_buf, ctx->recv_client_buf, msg_sz));
 }

@@ -194,6 +194,25 @@ free_ctx_fields:
     return (NULL);
 }
 
+static const char *wc_opcode_str(enum ibv_wc_opcode opc) {
+    switch (opc) {
+    case IBV_WC_RECV:
+        return "WC_RECV";
+    case IBV_WC_RECV_RDMA_WITH_IMM:
+        return "WC_RECV_RDMA_WITH_IMM";
+    case IBV_WC_SEND:
+        return "WC_SEND";
+    case IBV_WC_RDMA_WRITE:
+        return "WC_RDMA_WRITE";
+    case IBV_WC_RDMA_READ:
+        return "WC_RDMA_READ";
+    default:
+        return "UNKNOWN WCQE OPCODE";
+    }
+
+    return "";
+}
+
 static void *server_wcq_monitor(void *arg) {
     server_ctx_t *ctx = (server_ctx_t *)(arg);
     struct ibv_wc wc[MAX_CQE] = {0};
@@ -206,14 +225,22 @@ static void *server_wcq_monitor(void *arg) {
             if (wc[i].status != IBV_WC_SUCCESS) {
                 printf("WCQE for WR[%ld] Status: %s\n", wc[i].wr_id,
                        ibv_wc_status_str(wc[i].status));
+            } else {
+#if 0
+                printf("WCQE for WR[%ld] Opcode: %s\n", wc[i].wr_id,
+                       wc_opcode_str(wc[i].opcode));
+#endif
             }
-
             // Based on the opcode decide the action
             switch (wc[i].opcode) {
             case IBV_WC_RECV:
             case IBV_WC_RECV_RDMA_WITH_IMM:
                 pthread_mutex_lock(&(ctx->wcq_mtx));
-                ctx->recv_done = 1;
+                // This only works because all messages are of the same size and
+                // opcode, else we would need to organize this info by wr_id and
+                // use that to correlate the dispatcher
+                ctx->recv_opc = (wc[i].imm_data);
+                ctx->recv_sz = (wc[i].byte_len);
                 pthread_cond_signal(&(ctx->wcq_cv));
                 pthread_mutex_unlock(&(ctx->wcq_mtx));
                 break;
@@ -232,8 +259,9 @@ int prepare_server_data(server_ctx_t *ctx) {
     // Register memory with RDMA stack
     // Save keys and mrs into ctx
     // Exchange addresses with client using a passive server
-    size_t send_sz = 1048576;
-    size_t recv_sz = 1048576;
+    size_t send_sz = (MAX_MR_SZ);
+    size_t recv_sz = (MAX_MR_SZ);
+    int rc = 0;
     // Allocate 1MB of buffer space
     void *send_buf = mmap(NULL, send_sz, PROT_READ | PROT_WRITE,
                           MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
@@ -279,13 +307,6 @@ int prepare_server_data(server_ctx_t *ctx) {
 
     randomize_buf(&(ctx->send_server_buf), ctx->send_server_buf_sz);
 
-    // TODO: Use TCP-IP client/server socket to exchg this
-    return (0);
-}
-
-int send_recv_server(server_ctx_t *ctx) {
-    static int count = 0;
-    int rc = 0;
     // Start a separate thread to poll for completion
     pthread_attr_t tattr;
     pthread_attr_init(&tattr);
@@ -298,6 +319,13 @@ int send_recv_server(server_ctx_t *ctx) {
         rc, { return (-1); },
         "Unable to create WCQ shared send/recv monitor\n");
 
+    // TODO: Use TCP-IP client/server socket to exchg this
+    return (0);
+}
+
+int send_recv_server(server_ctx_t *ctx) {
+    static int count = 0;
+    int rc = 0, opc = 0;
     // Based on the IMM data opc, prepare wqe structures for response
     // IBV_SEND: lkey, no rkey is needed, zcopy local send, 1-copy remote
     // Protocol-1: Measure RTT time from client<->server
@@ -319,31 +347,37 @@ int send_recv_server(server_ctx_t *ctx) {
 
     // sync with WCQ to make sure RECV_RDMA is consumed
     pthread_mutex_lock(&(ctx->wcq_mtx));
-    while (!ctx->recv_done) {
+    while (ctx->recv_opc == OPC_INVALID) {
         pthread_cond_wait(&(ctx->wcq_cv), &(ctx->wcq_mtx));
     }
 
-    ctx->recv_done = 0; // Reset for next request
+    opc = ctx->recv_opc;
+    ctx->recv_opc = OPC_INVALID; // Reset for next request
     pthread_mutex_unlock(&(ctx->wcq_mtx));
 
-    send_wr.wr_id = count++;
-    send_wr.next = NULL;
-    sge.addr = (uint64_t)ctx->recv_server_buf; // zcopy round about !
-    sge.length = ctx->recv_server_buf_sz;
-    sge.lkey = ctx->recv_buf_mr->lkey;
-    send_wr.sg_list = &sge;
-    send_wr.num_sge = 1;
-    send_wr.opcode = IBV_WR_SEND;
-    // remote address doesn't matter
-    send_wr.wr.rdma.remote_addr = 0;
-    send_wr.wr.rdma.rkey = 0;
-    rc = ibv_post_send(ctx->listen_id->qp, &send_wr, &send_bad_wr);
-    API_STATUS(
-        rc, { return (-1); }, "Unable to post send request. Reason: %s\n",
-        strerror(errno));
+    if (opc == OPC_SEND_ONLY) {
+        send_wr.wr_id = count++;
+        send_wr.next = NULL;
+        sge.addr = (uint64_t)ctx->recv_server_buf; // zcopy round about !
+        sge.length = ctx->recv_sz;
+        sge.lkey = ctx->recv_buf_mr->lkey;
+        send_wr.sg_list = &sge;
+        send_wr.num_sge = 1;
+        send_wr.opcode = IBV_WR_SEND;
+        // remote address doesn't matter
+        send_wr.wr.rdma.remote_addr = 0;
+        send_wr.wr.rdma.rkey = 0;
+        rc = ibv_post_send(ctx->listen_id->qp, &send_wr, &send_bad_wr);
+        API_STATUS(
+            rc, { return (-1); }, "Unable to post send request. Reason: %s\n",
+            strerror(errno));
+        // Ignore the processing of send completion as client synchronizes for
+        // it!
+    } else {
+        // Protocol-2: Measure RDMA_WRITE RTT from client<->server
+        printf("Unsupported OPC received\n");
+        return (-1);
+    }
 
-    // Ignore the processing of send completion as client synchronizes for it!
-
-    // Protocol-2: Measure RDMA_WRITE RTT from client<->server
     return (0);
 }

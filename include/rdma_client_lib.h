@@ -67,12 +67,12 @@ client_ctx_t *setup_client(struct sockaddr *src_addr,
 /**
  * @brief Process client response received
  */
-int process_client_response(client_ctx_t *ctx, int opc);
+int process_client_response(client_ctx_t *ctx, int opc, size_t msg_sz);
 
 /**
  * @brief Send client request to server
  */
-int send_client_request(client_ctx_t *ctx, int opc);
+int send_client_request(client_ctx_t *ctx, int opc, size_t msg_sz);
 
 /**
  * @brief Prepare client request & response to be send/recv

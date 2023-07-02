@@ -52,7 +52,8 @@ typedef struct server_ctx_s {
     size_t recv_server_buf_sz;  //< size of recv for send buf
     struct ibv_mr *send_buf_mr; //< RDMA compliant send buf mr
     struct ibv_mr *recv_buf_mr; //< RDMA compliant recv buf mr
-    bool recv_done;
+    int recv_opc;               //< RDMA received immediate opcode from client
+    size_t recv_sz;             //< RDMA WCQE byte len
 } server_ctx_t;
 
 /**

@@ -28,7 +28,6 @@ int start_server(server_info_t *sv) {
         API_STATUS(
             send_recv_server(ctx), { return -1; },
             "Unable to send/recv request/response to/from server\n");
-        // TODO: Define stopping condition ?
     }
 
     return (0);
